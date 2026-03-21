@@ -21,7 +21,8 @@ PADMEGeometry Geometry;
 const Double_t me = 0.511; //MeV
 const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
 const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
- 
+TRandom3 rand3 = TRandom3(1);
+
 //minimum radius of cluster for ECal acceptance given sqrts
 double kineRMin(double sqrts){
   double deltaZ = Geometry.deltaZ;//target-ECal distanec
@@ -126,8 +127,12 @@ double RecoSqrtsStraightTracks(TLorentzVector pos_4mom, TLorentzVector ele_4mom,
     }
   else
     {
-      Epos = Epos_true+ECalResolution(Epos_true);
-      Eele = Eele_true+ECalResolution(Eele_true);
+      Double_t MaxECalRes_pos  = ECalResolution(Epos_true);
+      Double_t MaxECalRes_ele  = ECalResolution(Eele_true);
+      Double_t DeltaE_smear_pos = rand3.Uniform(-1.*MaxECalRes_pos,MaxECalRes_pos);
+      Double_t DeltaE_smear_ele = rand3.Uniform(-1.*MaxECalRes_ele,MaxECalRes_ele);
+      Epos = Epos_true+DeltaE_smear_pos;
+      Eele = Eele_true+DeltaE_smear_ele;
     }
   
   double ptot_pos = TMath::Sqrt(Epos*Epos-me*me);
@@ -297,7 +302,6 @@ void TrackerToyMC()
   TH1F* hDeltaSqrtsECalSmear   = new TH1F("hDeltaSqrtsECalSmear"  ,";#Delta(#sqrt{s})_{ECalSmear} (MeV)",100,-2,2);
   
   int nparticles = 1e5;
-  TRandom3 rand = TRandom3(1);
   
   for(int ii = 0; ii<nparticles; ii++)
     {
@@ -306,8 +310,8 @@ void TrackerToyMC()
       Double_t mom_CoM = TMath::Sqrt(Ee_CoM*Ee_CoM-me*me); //magnitude of momentum of e+/e- in CoM
       
       //theta = polar angle: angle wrt z axis, phi = azimuthal angle: rotation around z axis
-      Double_t cos_theta_pos_CoM = rand.Uniform(-1,1);   //polar angle in CoM is uniformly distributed in cos(theta)
-      Double_t phi_pos = rand.Uniform(0,2.*TMath::Pi()); //azimuthal angle in CoM is uniformly distributed between 0-2pi
+      Double_t cos_theta_pos_CoM = rand3.Uniform(-1,1);   //polar angle in CoM is uniformly distributed in cos(theta)
+      Double_t phi_pos = rand3.Uniform(0,2.*TMath::Pi()); //azimuthal angle in CoM is uniformly distributed between 0-2pi
 
       //trigonometry
       Double_t theta_pos_CoM = TMath::ACos(cos_theta_pos_CoM);
@@ -343,7 +347,7 @@ void TrackerToyMC()
       Double_t tan_theta_pos_lab = pt_pos_lab/pos_4mom_lab.Z();
       Double_t tan_theta_ele_lab = pt_ele_lab/ele_4mom_lab.Z();
 
-      std::cout<<tan_theta_pos_lab<<" "<<tan_theta_ele_lab<<" "<<tanmin<<" "<<tanmax<<std::endl;
+      //      std::cout<<tan_theta_pos_lab<<" "<<tan_theta_ele_lab<<" "<<tanmin<<" "<<tanmax<<std::endl;
       
       double reco_sqrts_straight_nores = -999;
       double reco_sqrts_straight_ECalSmear = -999;
@@ -351,7 +355,9 @@ void TrackerToyMC()
 	{
 	  hCosThetaPosCoMPassing->Fill(cos_theta_pos_CoM);
 	  reco_sqrts_straight_nores     = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 0);
+	  hDeltaSqrtsNoRes->Fill(reco_sqrts_straight_nores-sqrts);
 	  reco_sqrts_straight_ECalSmear = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 1);
+	  hDeltaSqrtsECalSmear->Fill(reco_sqrts_straight_ECalSmear-sqrts);
 	}
       
       /*
@@ -367,8 +373,6 @@ void TrackerToyMC()
       //simulate ECal resolution and add to e+/e- energy
       Double_t MaxECalRes_pos   = ECalResolution(Epos_true);
       Double_t MaxECalRes_ele   = ECalResolution(Eele_true);
-      Double_t DeltaE_smear_pos = rand.Uniform(-1.*MaxECalRes_pos,MaxECalRes_pos);
-      Double_t DeltaE_smear_ele = rand.Uniform(-1.*MaxECalRes_ele,MaxECalRes_ele);
 
       Double_t Epos_ECalSmear = Epos_true+DeltaE_smear_pos;
       Double_t Eele_ECalSmear = Eele_true+DeltaE_smear_ele;
@@ -376,11 +380,10 @@ void TrackerToyMC()
       //s = (P1+P2)
       //no smearing
       Double_t reco_sqrts_nores = RecoSqrts(pos_coord_nores1, ele_coord_nores1, pos_coord_nores2, ele_coord_nores2, Epos_true, Eele_true);
-      hDeltaSqrtsNoRes->Fill(reco_sqrts_nores-sqrts);
 
       //smearing just from ECal
       Double_t reco_sqrts_ECalSmear = RecoSqrts(pos_coord_nores1, ele_coord_nores1, pos_coord_nores2, ele_coord_nores2, Epos_ECalSmear, Eele_ECalSmear);
-      hDeltaSqrtsECalSmear->Fill(reco_sqrts_ECalSmear-sqrts);
+
 
       //smearing from tracker
      */ 
