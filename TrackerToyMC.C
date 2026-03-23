@@ -359,34 +359,8 @@ void TrackerToyMC()
 	  reco_sqrts_straight_ECalSmear = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 1);
 	  hDeltaSqrtsECalSmear->Fill(reco_sqrts_straight_ECalSmear-sqrts);
 	}
-      
-      /*
-      std::cout<<"Pos 1: ("<<x1_pos<<","<<y1_pos<<"), Ele 1: "<<x1_ele<<","<<y1_ele<<")"<<std::endl;
-      std::cout<<"Pos 2: ("<<x2_pos<<","<<y2_pos<<"), Ele 2: "<<x2_ele<<","<<y2_ele<<")\n"<<std::endl;
-      */
-      /*      
-      TVector3 pos_coord_nores1(x1_pos, y1_pos, z1);
-      TVector3 pos_coord_nores2(x2_pos, y2_pos, z2);
-      TVector3 ele_coord_nores1(x1_ele, y1_ele, z1);
-      TVector3 ele_coord_nores2(x2_ele, y2_ele, z2);
-
-      //simulate ECal resolution and add to e+/e- energy
-      Double_t MaxECalRes_pos   = ECalResolution(Epos_true);
-      Double_t MaxECalRes_ele   = ECalResolution(Eele_true);
-
-      Double_t Epos_ECalSmear = Epos_true+DeltaE_smear_pos;
-      Double_t Eele_ECalSmear = Eele_true+DeltaE_smear_ele;
-      
-      //s = (P1+P2)
-      //no smearing
-      Double_t reco_sqrts_nores = RecoSqrts(pos_coord_nores1, ele_coord_nores1, pos_coord_nores2, ele_coord_nores2, Epos_true, Eele_true);
-
-      //smearing just from ECal
-      Double_t reco_sqrts_ECalSmear = RecoSqrts(pos_coord_nores1, ele_coord_nores1, pos_coord_nores2, ele_coord_nores2, Epos_ECalSmear, Eele_ECalSmear);
-
 
       //smearing from tracker
-     */ 
     }
 
   TCanvas* cCosThetaPosCoMPassing = new TCanvas("cCosThetaPosCoMPassing","cCosThetaPosCoMPassing",900,700);
