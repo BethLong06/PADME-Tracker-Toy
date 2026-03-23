@@ -19,9 +19,11 @@ struct PADMEGeometry
 
 PADMEGeometry Geometry;
 const Double_t me = 0.511; //MeV
+const Double_t SigmaPOverP = 0.25e-2; //Run 3 paper: relative energy spread = 0.25% DOI 10.1007/JHEP11(2025)007
+const Double_t fConstantMagneticField = 0.05;//0.36;//0.4542; // [T]
 const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
 const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
-TRandom3 rand3 = TRandom3(1);
+TRandom3 rand3 = TRandom3(0);
 
 //minimum radius of cluster for ECal acceptance given sqrts
 double kineRMin(double sqrts){
@@ -155,24 +157,23 @@ double RecoSqrtsStraightTracks(TLorentzVector pos_4mom, TLorentzVector ele_4mom,
 }
 
 double getBYfield(double x0, double y0, double z0in){ // input in mm
-  double fConstantMagneticField = 0.36;//0.4542; // [T] 
-  //  fConstantMagneticField = 0.;                                                                                                                                                                      
+  //  double fConstantMagneticField = 0.;
 
   double fConstantMagneticFieldXmin = -26.0;//[cm]*cm;
   double fConstantMagneticFieldXmax =  26.0;//[cm]*cm;
 
-  double fConstantMagneticFieldZmin = -37.5;// [cm]*cm;
-  double fConstantMagneticFieldZmax =  37.5;// [cm]*cm;
+  double fConstantMagneticFieldZmin = Geometry.magnet_front_z*0.1;//-37.5;// [cm]*cm;
+  double fConstantMagneticFieldZmax = Geometry.magnet_back_z*0.1;//37.5;// [cm]*cm;
 
-  double fSigmaFront = 27.4;//*cm;   //Based of the LNF magnetic measurement M. Raggi .ppt nov 2018                                                                                                             
-  double fSigmaBack  = 27.4;//*cm;   //Based of the LNF magnetic measurement M. Raggi .ppt nov 2018                                                                                                             
+  double fSigmaFront = 27.4;//*cm;   //Based of the LNF magnetic measurement M. Raggi .ppt nov 2018
+  double fSigmaBack  = 27.4;//*cm;   //Based of the LNF magnetic measurement M. Raggi .ppt nov 2018
 
-  // The magnetic volume is a box centered at magnet center with x and y dimensions                                                                                                                   
-  // as the magnet cavity and with z extends 50cm outside both sides of the magnet                                                                                                                    
+  // The magnetic volume is a box centered at magnet center with x and y dimensions
+  // as the magnet cavity and with z extends 50cm outside both sides of the magnet
   double fMagneticVolumePosZ = 0.;
   double fMagneticVolumeLengthX = 112.;//*cm;
   double fMagneticVolumeLengthY = 23.;//*cm;
-  double fMagneticVolumeLengthZ = 200.;//*cm;
+  double fMagneticVolumeLengthZ = 100;//200.;//*cm;
 
   double x = x0*0.1;
   double y = y0*0.1;
@@ -182,25 +183,34 @@ double getBYfield(double x0, double y0, double z0in){ // input in mm
   if ( (x<-0.5*fMagneticVolumeLengthX) || (x>0.5*fMagneticVolumeLengthX) ||
        (y<-0.5*fMagneticVolumeLengthY) || (y>0.5*fMagneticVolumeLengthY) ||
        (z<-0.5*fMagneticVolumeLengthZ) || (z>0.5*fMagneticVolumeLengthZ) ) {
-    // Field outside magnetic volume is always null                                                                                                                                                   
+    // Field outside magnetic volume is always null
     BField0 = 0.;
   } else if (x<fConstantMagneticFieldXmin || x>fConstantMagneticFieldXmax) {
-    // Will need a function/map to smoothly send B0 to 0 along X                                                                                                                                      
+    // Will need a function/map to smoothly send B0 to 0 along X
     BField0 = 0.;
   } else if (z<fConstantMagneticFieldZmin) {
-    // Use gaussian to model upstream magnetic field rise                                                                                                                                             
+    // Use gaussian to model upstream magnetic field rise
     double dZS = (z-fConstantMagneticFieldZmin)/fSigmaFront;
     BField0 = exp(-dZS*dZS);
   } else if (z>fConstantMagneticFieldZmax) {
-    // Use gaussian to model downstream magnetic field fall                                                                                                                                           
+    // Use gaussian to model downstream magnetic field fall
     double dZS = (z-fConstantMagneticFieldZmax)/fSigmaBack;
     BField0 = exp(-dZS*dZS);
   }
   return -fConstantMagneticField*BField0;
 }
 
-void Swimmer(TVector3 LocalDirection,  TVector3 LocalPosition, int charge)
+void Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag)
 {
+  int charge = 0;
+  if(tag == "Pos"||tag.Contains("Beam")) charge = +1;
+  else if (tag == "Ele") charge = -1;
+  else
+    {
+      std::cout<<"Swimmer: tag "<<tag<<" unclear"<<std::endl;
+      return;
+    }
+  
   TVector3 PT(0,0,0);
   TVector3 LocalPositionRot(0,0,0);
   TVector3 magField(0,1,0); // T
@@ -213,12 +223,12 @@ void Swimmer(TVector3 LocalDirection,  TVector3 LocalPosition, int charge)
   double ecalfireden = -1;
   double localpositionInECal[2] = {0,0};
   
-  const double stepL = 10;//mm 0.2;//0.1; // mm
+  const double stepL = 0.2;//5;//mm 0.2;//0.1; // mm //without B field or fit, 10 mm for 1e5 particles = 4s, 1 mm for 1e5 particles = 28s, 0.1 mm for 1e5 particles = 280s
   double stepLM = stepL*1E-3; //m
 
   int ncells = Geometry.nECal_cells;
   
-  const double bScale = 0; // scale of the magnetic field (Beth: T I guess?)
+  const double bScale = 1;//0; // scale of the magnetic field
   
   // swim loop
   
@@ -227,15 +237,15 @@ void Swimmer(TVector3 LocalDirection,  TVector3 LocalPosition, int charge)
     magField.SetY(getBYfield(LocalPosition.X(),LocalPosition.Y(),LocalPosition.Z())*bScale);
     if (magField.Mag() > 1E-8){
       magFieldS.SetXYZ(magField.X()*stepLM,magField.Y()*stepLM,magField.Z()*stepLM); // Tm
-      PT = LocalDirection.Cross(magFieldS);
-      PT *= charge*0.3*1E3/LocalDirection.Mag(); // Length in m, PT in MeV
-      double localMag = LocalDirection.Mag();
-      LocalDirection += PT;
-      LocalDirection *= (localMag/LocalDirection.Mag());
+      PT = LocalMomentum.Cross(magFieldS);
+      PT *= charge*0.3*1E3/LocalMomentum.Mag(); // Length in m, PT in MeV //0.3 = conversion between SI (T, m) and natural units (GeV), 1e3 = GeV->MeV
+      double localMag = LocalMomentum.Mag();
+      LocalMomentum += PT;
+      LocalMomentum *= (localMag/LocalMomentum.Mag());
     }
-    TVector3 dStep(stepL*LocalDirection.X()/LocalDirection.Mag(),
-		   stepL*LocalDirection.Y()/LocalDirection.Mag(),
-		   stepL*LocalDirection.Z()/LocalDirection.Mag());
+    TVector3 dStep(stepL*LocalMomentum.X()/LocalMomentum.Mag(),
+		   stepL*LocalMomentum.Y()/LocalMomentum.Mag(),
+		   stepL*LocalMomentum.Z()/LocalMomentum.Mag());
 	  
     LocalPosition.SetX(LocalPosition.X() + dStep.X());
     LocalPosition.SetY(LocalPosition.Y() + dStep.Y());
@@ -243,14 +253,29 @@ void Swimmer(TVector3 LocalDirection,  TVector3 LocalPosition, int charge)
 
     totalLength += stepL;
 
-    if (/*fVerbose && */(is%30 == 0)) {
-      cout << "In detailed magnetic Transport: PT kick = ( "<< PT.X() << ", "<< PT.Y()<<", "<< PT.Z()<< ") "
-	   << " mom[MeV] = ( " << LocalDirection.X() << " ,"<<LocalDirection.Y() << " ,"<< LocalDirection.Z() << ")"
-	   << " pos[mm] = ( " << LocalPosition.X() << " ,"<<LocalPosition.Y() << " ,"<< LocalPosition.Z() << ")"
-	   << " local pos[mm] = ( " << LocalPositionRot.X() << " ,"<<LocalPositionRot.Y() << " ,"<< LocalPositionRot.Z() << ")"
-	   << " magField[Tm] = ( " << magFieldS.X() << " ,"<<magFieldS.Y() << " ,"<<magFieldS.Z() << ")"<< endl;
-    }
+    // if (is % 500 == 0) {
+    //   std::cout << "z=" << LocalPosition.Z()
+    // 		<< " x=" << LocalPosition.X()
+    // 		<< " px=" << LocalMomentum.X()
+    // 		<< std::endl;
+    // }
 
+    double prevZ = LocalPosition.Z() - dStep.Z();
+    double x = LocalPosition.X();
+    double y = LocalPosition.Y();
+
+    if ( (prevZ < z1) && (LocalPosition.Z() >= z1) ) {
+      mh2.at("h" + tag + "_XYZ1")->Fill(x,y);
+      mh1.at("h" + tag + "_XZ1")->Fill(x);
+      mh1.at("h" + tag + "_YZ1")->Fill(y);
+    }
+    
+    if ( (prevZ < z2) && (LocalPosition.Z() >= z2) ) {
+      mh2.at("h" + tag + "_XYZ2")->Fill(x,y);
+      mh1.at("h" + tag + "_XZ2")->Fill(x);
+      mh1.at("h" + tag + "_YZ2")->Fill(y);
+    }
+ 
     if (LocalPosition.Z() > Geometry.ECal_front_z + Geometry.ECal_length) break;
 	  
     if (!insideECal) {
@@ -267,7 +292,7 @@ void Swimmer(TVector3 LocalDirection,  TVector3 LocalPosition, int charge)
 	      if (!hole) {
 		insideECal = kTRUE;
 		ecalchannelFired = icellX + ncells*icellY;
-		ecalfireden = LocalDirection.Mag();
+		ecalfireden = LocalMomentum.Mag();
 		localpositionInECal[0] = LocalPosition.X();
 		localpositionInECal[1] = LocalPosition.Y();
 		break;
@@ -280,15 +305,70 @@ void Swimmer(TVector3 LocalDirection,  TVector3 LocalPosition, int charge)
   }
 }
 
+void BeamSpotSpread(TString tag, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
+{
+  double sqrts_sideband = 0;
+  if(tag == "Beam_LowSideband") sqrts_sideband = 16.5;
+  else if(tag == "Beam_HighSideband") sqrts_sideband = 20.0;
+  else
+    {
+      std::cout<<"BeamSpotSpread: tag "<<tag<<" unknown"<<std::endl;
+      return;
+    }  
+  int nparticles = 1e3;
+  double Ebeam_sideband = (sqrts_sideband*sqrts_sideband)/(2*me)-me;
+  double pbeam_sideband = TMath::Sqrt(Ebeam_sideband*Ebeam_sideband-me*me);
+
+  if(tag.Contains("Low"))
+    mh1["hPbeamSmear_LowSideband"] = new TH1F("hPbeamSmear_LowSideband","hPbeamSmear_LowSideband",100,pbeam_sideband-5,pbeam_sideband+5);
+  else if(tag.Contains("High"))
+    mh1["hPbeamSmear_HighSideband"] = new TH1F("hPbeamSmear_HighSideband","hPbeamSmear_HighSideband",100,pbeam_sideband-5,pbeam_sideband+5);
+  
+  std::cout<<pbeam_sideband<<std::endl;
+  
+  for (int ii = 0; ii<nparticles; ii++)
+    {
+      //smear beam energy
+      Double_t SigmaPbeam = SigmaPOverP*pbeam_sideband;
+      Double_t DeltaP = rand3.Gaus(0, SigmaPbeam);
+      Double_t PbeamSmear = pbeam_sideband+DeltaP;
+      if(tag.Contains("Low"))
+	mh1.at("hPbeamSmear_LowSideband")->Fill(PbeamSmear);
+      else if(tag.Contains("High"))
+	mh1.at("hPbeamSmear_HighSideband")->Fill(PbeamSmear);
+      
+      Swimmer(TVector3(0,0,PbeamSmear), TVector3(0,0,Geometry.target_z), mh1, mh2, tag);
+    }
+}
+
+void DrawAllHists(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
+{
+    // 1D histograms
+    for (auto& [name, hist] : mh1) {
+        TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
+        hist->Draw();
+    }
+
+    // 2D histograms
+    for (auto& [name, hist] : mh2) {
+        TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
+        hist->Draw("colz");
+    }
+}
+
 void TrackerToyMC()
 {
+  TBenchmark Benchmark = TBenchmark();
+  Benchmark.Start("macro");
+
+  Double_t Pbeam = 279; //nominal beam mom, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
+
   //set beam conditions
-  Double_t Pbeam = 279; //MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
   Double_t Ebeam = TMath::Sqrt(Pbeam*Pbeam+me*me); // MeV
   Double_t sqrts = TMath::Sqrt(2*me*(Ebeam+me));
   TLorentzVector system(0,0,Pbeam,Ebeam+me); //first approximation - electron energy in lab frame is negligible wrt beam energy
   TVector3 boost = system.BoostVector();
-
+  
   //set acceptance limits of ECal
   Double_t RMax = Geometry.ECal_RMax;                        //max radius of highest energy ECal cluster
   Double_t RMin = kineRMin(sqrts);                           //min distance of cluster
@@ -296,15 +376,51 @@ void TrackerToyMC()
   Double_t tanmax = RMax/Geometry.deltaZ;
 
   //set up histos
-  TH1F* hCosThetaPosCoMPassing = new TH1F("hCosThetaPosCoMPassing",";hCosThetaPosCoMPassing;",100,-1,1);
+  std::map<TString, TH1F*> mh1;
+  std::map<TString, TH2F*> mh2;
+  // 1D histograms
+  mh1["hCosThetaPosCoMPassing"] = new TH1F("hCosThetaPosCoMPassing",";hCosThetaPosCoMPassing;",100,-1,1);
 
-  TH1F* hDeltaSqrtsNoRes       = new TH1F("hDeltaSqrtsNoRes"      ,";#Delta(#sqrt{s})_{True} (MeV)",100,-2,2);
-  TH1F* hDeltaSqrtsECalSmear   = new TH1F("hDeltaSqrtsECalSmear"  ,";#Delta(#sqrt{s})_{ECalSmear} (MeV)",100,-2,2);
+  mh1["hBeam_LowSideband_XZ1"]  = new TH1F("hBeam_LowSideband_XZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
+  mh1["hBeam_LowSideband_XZ2"]  = new TH1F("hBeam_LowSideband_XZ2","X position of uninteracted beam at low sideband energy at z2",100,128,132);
+  mh1["hBeam_HighSideband_XZ1"] = new TH1F("hBeam_HighSideband_XZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
+  mh1["hBeam_HighSideband_XZ2"] = new TH1F("hBeam_HighSideband_XZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
+
+  mh1["hBeam_LowSideband_YZ1"]  = new TH1F("hBeam_LowSideband_YZ1","Y position of uninteracted beam at low sideband energy at z1",100,-1,1);
+  mh1["hBeam_LowSideband_YZ2"]  = new TH1F("hBeam_LowSideband_YZ2","Y position of uninteracted beam at low sideband energy at z2",100,-1,1);
+  mh1["hBeam_HighSideband_YZ1"] = new TH1F("hBeam_HighSideband_YZ1","Y position of uninteracted beam at high sideband energy at z1",100,-1,1);
+  mh1["hBeam_HighSideband_YZ2"] = new TH1F("hBeam_HighSideband_YZ2","Y position of uninteracted beam at high sideband energy at z2",100,-1,1);
+
+  mh1["hPos_XZ1"] = new TH1F("hPos_XZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
+  mh1["hPos_XZ2"] = new TH1F("hPos_XZ2","X position of uninteracted beam at low sideband energy at z2",100,128,132);
+  mh1["hEle_XZ1"] = new TH1F("hEle_XZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
+  mh1["hEle_XZ2"] = new TH1F("hEle_XZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
   
-  int nparticles = 1e5;
+  mh1["hPos_YZ1"] = new TH1F("hPos_YZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
+  mh1["hPos_YZ2"] = new TH1F("hPos_YZ2","X position of uninteracted beam at low sideband energy at z2",100,128,132);
+  mh1["hEle_YZ1"] = new TH1F("hEle_YZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
+  mh1["hEle_YZ2"] = new TH1F("hEle_YZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
   
-  for(int ii = 0; ii<nparticles; ii++)
+  mh1["hDeltaSqrtsNoRes"]     = new TH1F("hDeltaSqrtsNoRes",";#Delta(#sqrt{s})_{True} (MeV)",100,-2,2);
+  mh1["hDeltaSqrtsECalSmear"] = new TH1F("hDeltaSqrtsECalSmear",";#Delta(#sqrt{s})_{ECalSmear} (MeV)",100,-2,2);
+
+  // 2D histograms
+  mh2["hBeam_LowSideband_XYZ1"]  = new TH2F("hBeam_LowSideband_XYZ1","Position of uninteracted beam at low sideband energy at z1",50,-1,1,50,-1,1);
+  mh2["hBeam_LowSideband_XYZ2"]  = new TH2F("hBeam_LowSideband_XYZ2","Position of uninteracted beam at low sideband energy at z2",100,128,132,10,-1,1);
+  mh2["hBeam_HighSideband_XYZ1"] = new TH2F("hBeam_HighSideband_XYZ1","Position of uninteracted beam at high sideband energy at z1",50,-1,1,50,-1,1);
+  mh2["hBeam_HighSideband_XYZ2"] = new TH2F("hBeam_HighSideband_XYZ2","Position of uninteracted beam at high sideband energy at z2",100,86,90,100,-1,1);
+  
+  mh2["hPos_XYZ1"] = new TH2F("hPos_XYZ1","Position of positron from decay at z1",250,-250,250,110,-110,110);
+  mh2["hPos_XYZ2"] = new TH2F("hPos_XYZ2","Position of positron from decay at z2",250,-250,250,110,-110,110);
+  mh2["hEle_XYZ1"] = new TH2F("hEle_XYZ1","Position of electron from decay at z1",250,-250,250,110,-110,110);
+  mh2["hEle_XYZ2"] = new TH2F("hEle_XYZ2","Position of electron from decay at z2",250,-250,250,110,-110,110);
+  
+  int nParticlesPerBunch = 1e5;
+  
+  for(int ii = 0; ii<nParticlesPerBunch; ii++)
     {
+      if(ii%1000 == 0) std::cout<<"particle "<<ii<<std::endl;
+      
       //generate decay in CoM frame
       Double_t Ee_CoM = 0.5*sqrts;                      //Energy of e+/e- in CoM is half of sqrts (equal and opposite)
       Double_t mom_CoM = TMath::Sqrt(Ee_CoM*Ee_CoM-me*me); //magnitude of momentum of e+/e- in CoM
@@ -353,23 +469,28 @@ void TrackerToyMC()
       double reco_sqrts_straight_ECalSmear = -999;
       if(!(tan_theta_pos_lab<tanmin||tan_theta_ele_lab<tanmin||tan_theta_pos_lab>tanmax||tan_theta_ele_lab>tanmax))
 	{
-	  hCosThetaPosCoMPassing->Fill(cos_theta_pos_CoM);
+	  mh1.at("hCosThetaPosCoMPassing")->Fill(cos_theta_pos_CoM);
+
 	  reco_sqrts_straight_nores     = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 0);
-	  hDeltaSqrtsNoRes->Fill(reco_sqrts_straight_nores-sqrts);
+	  mh1.at("hDeltaSqrtsNoRes")->Fill(reco_sqrts_straight_nores-sqrts);
+
 	  reco_sqrts_straight_ECalSmear = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 1);
-	  hDeltaSqrtsECalSmear->Fill(reco_sqrts_straight_ECalSmear-sqrts);
+	  mh1.at("hDeltaSqrtsECalSmear")->Fill(reco_sqrts_straight_ECalSmear-sqrts);
 	}
 
       //smearing from tracker
+      TVector3 pos_3mom_lab = TVector3(pos_4mom_lab.X(), pos_4mom_lab.Y(), pos_4mom_lab.Z());
+      TVector3 ele_3mom_lab = TVector3(ele_4mom_lab.X(), ele_4mom_lab.Y(), ele_4mom_lab.Z());
+      TVector3 vertex_position = TVector3(0,0,Geometry.target_z);
+
+      Swimmer(pos_3mom_lab, vertex_position, mh1, mh2, "Pos");
+      Swimmer(ele_3mom_lab, vertex_position, mh1, mh2, "Ele");
     }
 
-  TCanvas* cCosThetaPosCoMPassing = new TCanvas("cCosThetaPosCoMPassing","cCosThetaPosCoMPassing",900,700);
-  hCosThetaPosCoMPassing->Draw();  
-
-  TCanvas* cDeltaSqrtsNoRes = new TCanvas("cDeltaSqrtsNoRes","cDeltaSqrtsNoRes",900,700);
-  hDeltaSqrtsNoRes->Draw();  
-
-  TCanvas* cDeltaSqrtsECalSmear = new TCanvas("cDeltaSqrtsECalSmear","cDeltaSqrtsECalSmear",900,700);
-  hDeltaSqrtsECalSmear->Draw();  
+  BeamSpotSpread("Beam_LowSideband", mh1, mh2);
+  BeamSpotSpread("Beam_HighSideband", mh1, mh2);
   
+  Benchmark.Show("macro");
+
+  DrawAllHists(mh1, mh2);
 }
