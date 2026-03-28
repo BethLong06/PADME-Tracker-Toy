@@ -7,8 +7,8 @@ struct PADMEGeometry
   double chamber_back_z = 2300; //mm
   double ECal_front_z   = 2436; //mm
   double ECal_length    = 230;  //mm
-  double magnet_width_x = 435;  //mm
-  double magnet_width_y = 205;  //mm
+  double magnet_width_x = 435;  //mm, == chamber width
+  double magnet_width_y = 205;  //mm, == chamber width
   double ECal_RMax      = 270;  //mm, maximum radius of highest energy cluster
   double ECal_cell_size = 21;   //mm
   int    nECal_cells    = 29;   // per row or column
@@ -23,7 +23,21 @@ const Double_t SigmaPOverP = 0.25e-2; //Run 3 paper: relative energy spread = 0.
 const Double_t fConstantMagneticField = 0.05;//0.36;//0.4542; // [T]
 const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
 const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
-TRandom3 rand3 = TRandom3(0);
+const Double_t position_res = 250e-6;//100e-6; //assume 100 microns for straws
+const Int_t    nTrackerPlanes = 4;//3;
+
+const bool BeamEnergySpread = 1;
+const bool ElectronEnergySpread = 1;
+
+TRandom3 rand3 = TRandom3(1);
+
+static Double_t SignalShape(double signalpeak,double bes,double lorewidth,double massn, double sqrts){ // return number of signal events produced(not the accepted) / POT at sqrts(s) at gven = 1           
+    const double me = 0.511;// MeV                                                                                                                                                                            
+    const double Wb = -7E-6;// MeV                                                                                                                                                                            
+    double eRes = (massn*massn - 2*me*me)/(2.*(me+Wb));
+    double eBeam = (sqrts*sqrts - 2*me*me)/(2.*me); // s = 2me^2 + 2meEbeam -> eBeam = (s-2me^2) / 2me                                                                                                        
+    return signalpeak*TMath::Voigt(eBeam-eRes,bes*eRes,lorewidth*2,5); // last input was 4 but with low BES can have rounding problems                                                                        
+}
 
 //minimum radius of cluster for ECal acceptance given sqrts
 double kineRMin(double sqrts){
@@ -200,17 +214,8 @@ double getBYfield(double x0, double y0, double z0in){ // input in mm
   return -fConstantMagneticField*BField0;
 }
 
-void Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag)
+std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag)
 {
-  int charge = 0;
-  if(tag == "Pos"||tag.Contains("Beam")) charge = +1;
-  else if (tag == "Ele") charge = -1;
-  else
-    {
-      std::cout<<"Swimmer: tag "<<tag<<" unclear"<<std::endl;
-      return;
-    }
-  
   TVector3 PT(0,0,0);
   TVector3 LocalPositionRot(0,0,0);
   TVector3 magField(0,1,0); // T
@@ -229,6 +234,16 @@ void Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, T
   int ncells = Geometry.nECal_cells;
   
   const double bScale = 1;//0; // scale of the magnetic field
+
+  std::vector<TVector3> vCoords; //vector to contain coordinates of partiles at tracker planes
+  int charge = 0;
+  if(tag == "Pos"||tag.Contains("Beam")) charge = +1;
+  else if (tag == "Ele") charge = -1;
+  else
+    {
+      std::cout<<"Swimmer: tag "<<tag<<" unclear"<<std::endl;
+      return vCoords;
+    }
   
   // swim loop
   
@@ -252,13 +267,13 @@ void Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, T
     LocalPosition.SetZ(LocalPosition.Z() + dStep.Z());
 
     totalLength += stepL;
-
+    
     // if (is % 500 == 0) {
-    //   std::cout << "z=" << LocalPosition.Z()
-    // 		<< " x=" << LocalPosition.X()
-    // 		<< " px=" << LocalMomentum.X()
-    // 		<< std::endl;
-    // }
+	// std::cout << "z=" << LocalPosition.Z();
+	// std::cout << " x=" << LocalPosition.X();
+	// std::cout << " px=" << LocalMomentum.X();
+	// std::cout << std::endl;
+    //     }
 
     double prevZ = LocalPosition.Z() - dStep.Z();
     double x = LocalPosition.X();
@@ -268,16 +283,28 @@ void Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, T
       mh2.at("h" + tag + "_XYZ1")->Fill(x,y);
       mh1.at("h" + tag + "_XZ1")->Fill(x);
       mh1.at("h" + tag + "_YZ1")->Fill(y);
+      if(vCoords.size()!=0)
+	{
+	  std::cout<<"[Swimmer]: vCoords has non-zero size at Z1"<<std::endl;
+	  break;
+	}
+      else vCoords.push_back(LocalPosition);
     }
-    
+
     if ( (prevZ < z2) && (LocalPosition.Z() >= z2) ) {
       mh2.at("h" + tag + "_XYZ2")->Fill(x,y);
       mh1.at("h" + tag + "_XZ2")->Fill(x);
       mh1.at("h" + tag + "_YZ2")->Fill(y);
+      if(vCoords.size()!=1)
+	{
+	  std::cout<<"[Swimmer]: vCoords has size != 1 at Z2"<<std::endl;
+	  break;
+	}
+      else vCoords.push_back(LocalPosition);
     }
- 
+    
     if (LocalPosition.Z() > Geometry.ECal_front_z + Geometry.ECal_length) break;
-	  
+    
     if (!insideECal) {
       if (LocalPosition.Z()-Geometry.ECal_front_z > 0 && LocalPosition.Z()-Geometry.ECal_front_z < Geometry.ECal_length) { // register position of entering in the ecal
 	      
@@ -303,6 +330,7 @@ void Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, T
       }
     }
   }
+  return vCoords;
 }
 
 void BeamSpotSpread(TString tag, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
@@ -343,37 +371,75 @@ void BeamSpotSpread(TString tag, std::map<TString, TH1F*>& mh1, std::map<TString
 
 void DrawAllHists(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
 {
-    // 1D histograms
-    for (auto& [name, hist] : mh1) {
-        TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
-        hist->Draw();
-    }
+  //  TFile* fOut = new TFile(sOutputFilePath, "recreate");
 
-    // 2D histograms
-    for (auto& [name, hist] : mh2) {
-        TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
-        hist->Draw("colz");
-    }
+  // 1D histograms
+  for (auto& [name, hist] : mh1) {
+    TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
+    hist->Draw();
+    //    hist->Write();
+  }
+  
+  // 2D histograms
+  for (auto& [name, hist] : mh2) {
+    TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
+    hist->Draw("colz");
+    //    hist->Write();
+  }
+  // fOut->Write();
+  // fOut->Close();
+}
+
+//reconstructed momentum from tracks bent in B field
+double RecoMomCurvedTrack(TVector3 Coord_Z1, TVector3 Coord_Z2)
+{
+  //p[GeV] = 0.3qBL/theta
+
+  double X1 = Coord_Z1.X(); double X2 = Coord_Z2.X(); double DeltaX = X2-X1;
+  double Y1 = Coord_Z1.Y(); double Y2 = Coord_Z2.Y(); double DeltaY = Y2-Y1;
+  double Z1 = Coord_Z1.Z(); double Z2 = Coord_Z2.Z(); double DeltaZ = Z2-Z1;
+  
+  double tantheta = TMath::Sqrt(DeltaX*DeltaX+DeltaY*DeltaY)/DeltaZ;
+  double theta = TMath::ATan(tantheta);
+
+  double mag_field_length = Geometry.magnet_back_z-Geometry.magnet_front_z;
+  
+  double momentum = 0.3*fConstantMagneticField*mag_field_length/theta;
+  return momentum;
+}
+
+double RecoSqrtsCurvedTracks(std::vector<TVector3> vPosCoord, std::vector<TVector3> vEleCoord)
+{
+  TVector3 pos_atZ1 = vPosCoord[0]; TVector3 pos_atZ2 = vPosCoord[1];
+  TVector3 ele_atZ1 = vEleCoord[0]; TVector3 ele_atZ2 = vEleCoord[1];
+  
+  std::cout<<RecoMomCurvedTrack(pos_atZ1, pos_atZ2)<<" "<<RecoMomCurvedTrack(ele_atZ1, ele_atZ2)<<std::endl;
+  double sqrts;
+  return sqrts;
+}
+
+double TrackerResolution(double momentum) //momentum in MeV
+{
+  double GeVMomentum = momentum*1e-3;
+
+  double mag_field_length = 0.75;//(Geometry.magnet_back_z-Geometry.magnet_front_z)*1e-3; //L, m
+  double plane_separation_length = 0.5;//(Geometry.chamber_back_z-Geometry.magnet_front_z)*1e-3/nTrackerPlanes; //l, m
+
+  double nTrackerDetectors = 2*nTrackerPlanes;
+  
+  double relative_resolution = 8/0.3*1/(fConstantMagneticField*mag_field_length)*position_res/(mag_field_length*TMath::Sqrt(nTrackerDetectors))*GeVMomentum;
+  double momentum_resolution = relative_resolution*momentum; //MeV
+
+  //  std::cout<<"mag_field_length "<<mag_field_length<<" plane_separation_length "<<plane_separation_length<<" nTrackerPlanes "<<nTrackerPlanes<<" fConstantMagneticField "<<fConstantMagneticField<<" GeVMomentum "<<GeVMomentum<<" resolution "<<relative_resolution<<std::endl;
+  
+  //  std::cout<<"momentum "<<momentum<<" relative_resolution "<<relative_resolution<<" momentum_resolution "<<momentum_resolution<<std::endl;
+  return momentum_resolution;
 }
 
 void TrackerToyMC()
 {
   TBenchmark Benchmark = TBenchmark();
   Benchmark.Start("macro");
-
-  Double_t Pbeam = 279; //nominal beam mom, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
-
-  //set beam conditions
-  Double_t Ebeam = TMath::Sqrt(Pbeam*Pbeam+me*me); // MeV
-  Double_t sqrts = TMath::Sqrt(2*me*(Ebeam+me));
-  TLorentzVector system(0,0,Pbeam,Ebeam+me); //first approximation - electron energy in lab frame is negligible wrt beam energy
-  TVector3 boost = system.BoostVector();
-  
-  //set acceptance limits of ECal
-  Double_t RMax = Geometry.ECal_RMax;                        //max radius of highest energy ECal cluster
-  Double_t RMin = kineRMin(sqrts);                           //min distance of cluster
-  Double_t tanmin = RMin/Geometry.deltaZ;
-  Double_t tanmax = RMax/Geometry.deltaZ;
 
   //set up histos
   std::map<TString, TH1F*> mh1;
@@ -382,7 +448,7 @@ void TrackerToyMC()
   mh1["hCosThetaPosCoMPassing"] = new TH1F("hCosThetaPosCoMPassing",";hCosThetaPosCoMPassing;",100,-1,1);
 
   mh1["hBeam_LowSideband_XZ1"]  = new TH1F("hBeam_LowSideband_XZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
-  mh1["hBeam_LowSideband_XZ2"]  = new TH1F("hBeam_LowSideband_XZ2","X position of uninteracted beam at low sideband energy at z2",100,128,132);
+  mh1["hBeam_LowSideband_XZ2"]  = new TH1F("hBeam_LowSideband_XZ2","X position of uninteracted beam at low sideband energy at z2",100,125,135);
   mh1["hBeam_HighSideband_XZ1"] = new TH1F("hBeam_HighSideband_XZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
   mh1["hBeam_HighSideband_XZ2"] = new TH1F("hBeam_HighSideband_XZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
 
@@ -391,16 +457,26 @@ void TrackerToyMC()
   mh1["hBeam_HighSideband_YZ1"] = new TH1F("hBeam_HighSideband_YZ1","Y position of uninteracted beam at high sideband energy at z1",100,-1,1);
   mh1["hBeam_HighSideband_YZ2"] = new TH1F("hBeam_HighSideband_YZ2","Y position of uninteracted beam at high sideband energy at z2",100,-1,1);
 
-  mh1["hPos_XZ1"] = new TH1F("hPos_XZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
-  mh1["hPos_XZ2"] = new TH1F("hPos_XZ2","X position of uninteracted beam at low sideband energy at z2",100,128,132);
-  mh1["hEle_XZ1"] = new TH1F("hEle_XZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
-  mh1["hEle_XZ2"] = new TH1F("hEle_XZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
+  mh1["hPos_mom"] = new TH1F("hPos_mom","momentum of positron from decay", 300, 0, 300);
+  mh1["hEle_mom"] = new TH1F("hEle_mom","momentum of electron from decay", 300, 0, 300);
   
-  mh1["hPos_YZ1"] = new TH1F("hPos_YZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
-  mh1["hPos_YZ2"] = new TH1F("hPos_YZ2","X position of uninteracted beam at low sideband energy at z2",100,128,132);
-  mh1["hEle_YZ1"] = new TH1F("hEle_YZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
-  mh1["hEle_YZ2"] = new TH1F("hEle_YZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
+  double xlim = Geometry.magnet_width_x/2.;
+  double ylim = Geometry.magnet_width_y/2.;
   
+  mh1["hPos_XZ1"] = new TH1F("hPos_XZ1","X position of positron from decay at z1", 200, -1.*xlim, xlim);
+  mh1["hPos_XZ2"] = new TH1F("hPos_XZ2","X position of positron from decay at z2", 200, -1.*xlim, xlim);
+  mh1["hEle_XZ1"] = new TH1F("hEle_XZ1","X position of electron from decay at z1", 200, -1.*xlim, xlim);
+  mh1["hEle_XZ2"] = new TH1F("hEle_XZ2","X position of electron from decay at z2", 200, -1.*xlim, xlim);
+  
+  mh1["hPos_YZ1"] = new TH1F("hPos_YZ1","Y position of positron from decay at z1", 200, -1.*ylim, ylim);
+  mh1["hPos_YZ2"] = new TH1F("hPos_YZ2","Y position of positron from decay at z2", 200, -1.*ylim, ylim);
+  mh1["hEle_YZ1"] = new TH1F("hEle_YZ1","Y position of electron from decay at z1", 200, -1.*ylim, ylim);
+  mh1["hEle_YZ2"] = new TH1F("hEle_YZ2","Y position of electron from decay at z2", 200, -1.*ylim, ylim);
+
+  mh1["hRelativeMomResTrack"] = new TH1F("hRelativeMomResTrack","",100,0,0.1);
+
+  mh1["hSqrtsTrue"]           = new TH1F("hSqrtsTrue","",100,16,18);
+  mh1["hSqrtsTrackerRes"]     = new TH1F("hSqrtsTrackerRes",";reconstructed #sqrt{s}",200,16,18);
   mh1["hDeltaSqrtsNoRes"]     = new TH1F("hDeltaSqrtsNoRes",";#Delta(#sqrt{s})_{True} (MeV)",100,-2,2);
   mh1["hDeltaSqrtsECalSmear"] = new TH1F("hDeltaSqrtsECalSmear",";#Delta(#sqrt{s})_{ECalSmear} (MeV)",100,-2,2);
 
@@ -410,17 +486,36 @@ void TrackerToyMC()
   mh2["hBeam_HighSideband_XYZ1"] = new TH2F("hBeam_HighSideband_XYZ1","Position of uninteracted beam at high sideband energy at z1",50,-1,1,50,-1,1);
   mh2["hBeam_HighSideband_XYZ2"] = new TH2F("hBeam_HighSideband_XYZ2","Position of uninteracted beam at high sideband energy at z2",100,86,90,100,-1,1);
   
-  mh2["hPos_XYZ1"] = new TH2F("hPos_XYZ1","Position of positron from decay at z1",250,-250,250,110,-110,110);
-  mh2["hPos_XYZ2"] = new TH2F("hPos_XYZ2","Position of positron from decay at z2",250,-250,250,110,-110,110);
-  mh2["hEle_XYZ1"] = new TH2F("hEle_XYZ1","Position of electron from decay at z1",250,-250,250,110,-110,110);
-  mh2["hEle_XYZ2"] = new TH2F("hEle_XYZ2","Position of electron from decay at z2",250,-250,250,110,-110,110);
+  mh2["hPos_XYZ1"] = new TH2F("hPos_XYZ1","Position of positron from decay at z1", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
+  mh2["hPos_XYZ2"] = new TH2F("hPos_XYZ2","Position of positron from decay at z2", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
+  mh2["hEle_XYZ1"] = new TH2F("hEle_XYZ1","Position of electron from decay at z1", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
+  mh2["hEle_XYZ2"] = new TH2F("hEle_XYZ2","Position of electron from decay at z2", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
   
-  int nParticlesPerBunch = 1e5;
+  int nDecays = 1e5;
   
-  for(int ii = 0; ii<nParticlesPerBunch; ii++)
+  for(int ii = 0; ii<nDecays; ii++)
     {
       if(ii%1000 == 0) std::cout<<"particle "<<ii<<std::endl;
+      Double_t Pbeam = 279; //nominal beam mom, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
+      if(BeamEnergySpread) Pbeam = Pbeam+rand3.Gaus(0,SigmaPOverP*Pbeam);
       
+      //set beam conditions
+      Double_t Ebeam = TMath::Sqrt(Pbeam*Pbeam+me*me); // MeV
+      Double_t sqrts = TMath::Sqrt(2*me*(Ebeam+me));
+      
+      double signalweight = 1;
+      //      if(ElectronEnergySpread) signalweight = SignalShape(13.6,0.0025,1.7,sqrts,sqrts); //from conversation with Tommaso
+      
+      TLorentzVector system(0,0,Pbeam,Ebeam+me); //first approximation - electron energy in lab frame is negligible wrt beam energy
+      TVector3 boost = system.BoostVector();
+      
+      //set acceptance limits of ECal
+      Double_t RMax = Geometry.ECal_RMax;                        //max radius of highest energy ECal cluster
+      /*
+      Double_t RMin = kineRMin(sqrts);                           //min distance of cluster
+      Double_t tanmin = RMin/Geometry.deltaZ;
+      Double_t tanmax = RMax/Geometry.deltaZ;
+      */
       //generate decay in CoM frame
       Double_t Ee_CoM = 0.5*sqrts;                      //Energy of e+/e- in CoM is half of sqrts (equal and opposite)
       Double_t mom_CoM = TMath::Sqrt(Ee_CoM*Ee_CoM-me*me); //magnitude of momentum of e+/e- in CoM
@@ -456,7 +551,16 @@ void TrackerToyMC()
       Double_t ptot_ele_lab = ele_4mom_lab.P();
       Double_t Epos_true = pos_4mom_lab.E();
       Double_t Eele_true = ele_4mom_lab.E();
+
+      mh1.at("hPos_mom")->Fill(ptot_pos_lab);
+      mh1.at("hEle_mom")->Fill(ptot_ele_lab);
       
+      //find momentum resolution from tracker: 
+      double pos_track_res = TrackerResolution(ptot_pos_lab);
+      double ele_track_res = TrackerResolution(ptot_ele_lab);
+      mh1["hRelativeMomResTrack"]->Fill(pos_track_res/ptot_pos_lab);
+      mh1["hRelativeMomResTrack"]->Fill(ele_track_res/ptot_ele_lab);
+	
       //for straight track approack, check for acceptance as soon as you've boosted
       Double_t pt_pos_lab = pos_4mom_lab.Pt();
       Double_t pt_ele_lab = ele_4mom_lab.Pt();
@@ -464,10 +568,10 @@ void TrackerToyMC()
       Double_t tan_theta_ele_lab = pt_ele_lab/ele_4mom_lab.Z();
 
       //      std::cout<<tan_theta_pos_lab<<" "<<tan_theta_ele_lab<<" "<<tanmin<<" "<<tanmax<<std::endl;
-      
+
       double reco_sqrts_straight_nores = -999;
       double reco_sqrts_straight_ECalSmear = -999;
-      if(!(tan_theta_pos_lab<tanmin||tan_theta_ele_lab<tanmin||tan_theta_pos_lab>tanmax||tan_theta_ele_lab>tanmax))
+      /*      if(!(tan_theta_pos_lab<tanmin||tan_theta_ele_lab<tanmin||tan_theta_pos_lab>tanmax||tan_theta_ele_lab>tanmax))
 	{
 	  mh1.at("hCosThetaPosCoMPassing")->Fill(cos_theta_pos_CoM);
 
@@ -477,20 +581,112 @@ void TrackerToyMC()
 	  reco_sqrts_straight_ECalSmear = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 1);
 	  mh1.at("hDeltaSqrtsECalSmear")->Fill(reco_sqrts_straight_ECalSmear-sqrts);
 	}
+      */
+      double reco_sqrts_straight_truth     = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 0);
+      mh1["hSqrtsTrue"]->Fill(reco_sqrts_straight_truth,signalweight);
+      
+      TVector3 vertex_position = TVector3(0,0,Geometry.target_z);
+      TVector3 pos_3mom_lab_true = TVector3(pos_4mom_lab.X(), pos_4mom_lab.Y(), pos_4mom_lab.Z());
+      TVector3 ele_3mom_lab_true = TVector3(ele_4mom_lab.X(), ele_4mom_lab.Y(), ele_4mom_lab.Z());
 
       //smearing from tracker
-      TVector3 pos_3mom_lab = TVector3(pos_4mom_lab.X(), pos_4mom_lab.Y(), pos_4mom_lab.Z());
-      TVector3 ele_3mom_lab = TVector3(ele_4mom_lab.X(), ele_4mom_lab.Y(), ele_4mom_lab.Z());
-      TVector3 vertex_position = TVector3(0,0,Geometry.target_z);
+      double ptot_pos_lab_smear = ptot_pos_lab + rand3.Gaus(0,pos_track_res);
+      double ptot_ele_lab_smear = ptot_ele_lab + rand3.Gaus(0,ele_track_res);
+      
+      TVector3 dir_pos_true = pos_3mom_lab_true.Unit();
+      TVector3 dir_ele_true = ele_3mom_lab_true.Unit();
+      
+      TVector3 reco_3mom_pos_smear = dir_pos_true * ptot_pos_lab_smear;
+      TVector3 reco_3mom_ele_smear = dir_ele_true * ptot_ele_lab_smear;
+      
+      double Epos_smear = TMath::Sqrt(ptot_pos_lab_smear*ptot_pos_lab_smear + me*me);
+      double Eele_smear = TMath::Sqrt(ptot_ele_lab_smear*ptot_ele_lab_smear + me*me);
+      
+      TLorentzVector reco_4mom_pos_smear = TLorentzVector(reco_3mom_pos_smear,Epos_smear);
+      TLorentzVector reco_4mom_ele_smear = TLorentzVector(reco_3mom_ele_smear,Eele_smear);
+      
+      TLorentzVector reco_4mom_lab_smear = reco_4mom_pos_smear+reco_4mom_ele_smear;
+      
+      double reco_sqrts_track_smear = reco_4mom_lab_smear.M();
+      mh1["hSqrtsTrackerRes"]->Fill(reco_sqrts_track_smear);
+      
+      //swimmer
+      std::vector<TVector3> vPosCoord = Swimmer(pos_3mom_lab_true, vertex_position, mh1, mh2, "Pos");
+      std::vector<TVector3> vEleCoord = Swimmer(ele_3mom_lab_true, vertex_position, mh1, mh2, "Ele");
 
-      Swimmer(pos_3mom_lab, vertex_position, mh1, mh2, "Pos");
-      Swimmer(ele_3mom_lab, vertex_position, mh1, mh2, "Ele");
+      if(vPosCoord.size()!= 2 || vEleCoord.size()!= 2)
+	{
+	  //	  std::cout<<"ii "<<ii<<" vPosCoord has size "<<vPosCoord.size()<<" "<<" vEleCoord has size "<<vEleCoord.size()<<" "<<std::endl;
+	  continue;
+	}
+
+      double reco_sqrts_curved = -999;
+      //      RecoSqrtsCurvedTracks(vPosCoord, vEleCoord);
+
     }
-
-  BeamSpotSpread("Beam_LowSideband", mh1, mh2);
-  BeamSpotSpread("Beam_HighSideband", mh1, mh2);
+  
+  // BeamSpotSpread("Beam_LowSideband", mh1, mh2);
+  // BeamSpotSpread("Beam_HighSideband", mh1, mh2);
   
   Benchmark.Show("macro");
 
   DrawAllHists(mh1, mh2);
+
+  int nelectronsim = 1e4;
+  double sqrtsmin = 16;
+  double sqrtsmax = 18;
+  double sqrtsstep = (sqrtsmax-sqrtsmin)/nelectronsim;
+
+  TGraph* gr = new TGraph(nelectronsim);
+  
+  for(int ii = 0; ii<nelectronsim; ii++)
+    {
+      double sqrts = sqrtsmin+ii*sqrtsstep;
+      double sigheight = SignalShape(13.6,0.0025,1.7,16.9015,sqrts); //from conversation with Tommaso
+      gr->SetPoint(ii, sqrts, sigheight);
+    }
+
+
+  TCanvas* cSqrts = new TCanvas("cSqrtsElectron","cSqrtsElectron",900,700);
+  gr->SetTitle(";#sqrt{s} (MeV);Signal (aribtrary units)");
+  gr->SetLineWidth(2);
+  gr->Draw("AL");  // A = axes, L = line
+  TH1* hHisto = mh1.at("hSqrtsTrackerRes");
+  hHisto->Scale(30./nDecays);
+  hHisto->Draw("histo same");
+
+  // Create a custom TPaveText (no dividing lines)
+  TPaveText *pt = new TPaveText(0.57,0.78,0.899,0.899,"NDC");
+  pt->SetFillColor(0);          // transparent
+  pt->SetLineColor(kRed);       // red border
+  pt->SetLineWidth(3);          // border width
+  pt->SetTextFont(42);          // clean font
+  pt->SetTextSize(0.04);        // optional text size
+  pt->SetTextAlign(32);         // right-aligned
+  pt->SetBorderSize(1);         // width - no shadow
+
+  // Add mean and sigma
+  pt->AddText(Form("Electron Mean = %.3f", gr->GetMean()));
+  pt->AddText(Form("Electron RMS = %.3f", gr->GetRMS()));
+
+  // Draw the box
+  pt->Draw();
+
+  // --- Blue box for histogram ---
+  TPaveText *ptBlue = new TPaveText(0.57,0.68,0.899,0.77,"NDC"); // slightly below red box
+  ptBlue->SetFillColor(0);
+  ptBlue->SetLineColor(kBlue);
+  ptBlue->SetLineWidth(3);
+  ptBlue->SetTextFont(42);
+  ptBlue->SetTextSize(0.04);
+  ptBlue->SetTextAlign(32);
+  ptBlue->SetBorderSize(1);
+  
+  ptBlue->AddText(Form("Tracker Mean = %.3f", hHisto->GetMean()));
+  ptBlue->AddText(Form("Tracker Std Dev = %.3f", hHisto->GetStdDev()));
+  
+  ptBlue->Draw();
+  
+  gPad->Modified();
+  gPad->Update();
 }
