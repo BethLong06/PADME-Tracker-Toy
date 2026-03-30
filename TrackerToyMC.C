@@ -23,7 +23,7 @@ const Double_t SigmaPOverP = 0.25e-2; //Run 3 paper: relative energy spread = 0.
 const Double_t fConstantMagneticField = 0.05;//0.36;//0.4542; // [T]
 const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
 const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
-const Double_t position_res = 250e-6;//100e-6; //assume 100 microns for straws
+const Double_t position_res = 100e-6; //assume 100 microns for straws
 const Int_t    nTrackerPlanes = 4;//3;
 
 const bool BeamEnergySpread = 1;
