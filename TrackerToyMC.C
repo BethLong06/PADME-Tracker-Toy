@@ -12,31 +12,104 @@ struct PADMEGeometry
   double ECal_RMax      = 270;  //mm, maximum radius of highest energy cluster
   double ECal_cell_size = 21;   //mm
   int    nECal_cells    = 29;   // per row or column
-
   double ECal_edge      = (nECal_cells/2+0.5)*ECal_cell_size; // 304.5mm
   double deltaZ = ECal_front_z-target_z; //target-ECal distance
+  double beamspotsize_X = 1.;  //mm, sigma beam X position at target
+  double beamspotsize_Y = 0.5; //mm, sigma beam Y position at target
+  double beamdivergence = 2;   //mrad
 };
 
 PADMEGeometry Geometry;
 const Double_t me = 0.511; //MeV
 const Double_t SigmaPOverP = 0.25e-2; //Run 3 paper: relative energy spread = 0.25% DOI 10.1007/JHEP11(2025)007
 const Double_t fConstantMagneticField = 0.05;//0.36;//0.4542; // [T]
-const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
-const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
 const Double_t position_res = 100e-6; //assume 100 microns for straws
 const Int_t    nTrackerPlanes = 4;//3;
+const Double_t ThetaBremPos = 14; //mrad, >98% of bremsstrahlung positrons have theta less than this at 430 MeV beam energy
+
+const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
+const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
+std::vector<std::pair<TString, Double_t>> vpZPositions = {{"Z1",z1}, {"Z2",z2}};
+
+std::vector<TString>     aTags = {"Ele","Pos","Brem", "Beam"};
+std::array<TString, 2>   aXY   = {"X","Y"};
+
+std::vector<std::pair<TString, TString>> vpsCuts;
+vpsCuts.push_back({"BeamDivCut", "with hole for beam divergence"});
+vpsCuts.push_back({"BremPosCut", "with hole for bremsstrahlung positron"});
 
 const bool BeamEnergySpread = 1;
 const bool ElectronEnergySpread = 1;
 
 TRandom3 rand3 = TRandom3(1);
 
-static Double_t SignalShape(double signalpeak,double bes,double lorewidth,double massn, double sqrts){ // return number of signal events produced(not the accepted) / POT at sqrts(s) at gven = 1           
-    const double me = 0.511;// MeV                                                                                                                                                                            
-    const double Wb = -7E-6;// MeV                                                                                                                                                                            
-    double eRes = (massn*massn - 2*me*me)/(2.*(me+Wb));
-    double eBeam = (sqrts*sqrts - 2*me*me)/(2.*me); // s = 2me^2 + 2meEbeam -> eBeam = (s-2me^2) / 2me                                                                                                        
-    return signalpeak*TMath::Voigt(eBeam-eRes,bes*eRes,lorewidth*2,5); // last input was 4 but with low BES can have rounding problems                                                                        
+void FillPositionHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, TString tag, double x, double y, TString sZKey, TString sCutName)
+{
+  if(sCutName.Length() == 0)
+    {
+      mh2.at("h" + tag + "_XY" + sZKey)->Fill(x,y);
+      mh1.at("h" + tag + "_X"  + sZKey)->Fill(x);
+      mh1.at("h" + tag + "_Y"  + sZKey)->Fill(y);
+    }
+  else 
+    {
+      mh2.at("h" + tag + "_XY" + sZKey + "_" + sCutName)->Fill(x,y);
+      mh1.at("h" + tag + "_X"  + sZKey + "_" + sCutName)->Fill(x);
+      mh1.at("h" + tag + "_Y"  + sZKey + "_" + sCutName)->Fill(y);
+    }
+}
+
+//returns theta angle and energy of Bremsstrahlung positron randomly sampled from 2D histogram
+//as of 1/7/26, 2D histogram used comes from MC truth for PADME run 660 conditions => ~430 MeV beam energy
+std::pair<double, double> BremThetaEneSampler(TString sBremBinFile, std::map<TString, TH2F*>& mh2)
+{
+  int nx, ny;
+  std::vector<double> xEdges, yEdges, mycdf;
+
+  std::ifstream in(sBremBinFile, std::ios::binary);
+  if (!in)
+    {
+      std::cerr << "Failed to open BremSampler.bin\n";
+      return {0,0};
+    }
+  
+  in.read(reinterpret_cast<char*>(&nx), sizeof(int));
+  in.read(reinterpret_cast<char*>(&ny), sizeof(int));
+  
+  xEdges.resize(nx + 1);
+  yEdges.resize(ny + 1);
+  mycdf.resize(nx * ny);
+  
+  in.read(reinterpret_cast<char*>(xEdges.data()), xEdges.size() * sizeof(double));
+  in.read(reinterpret_cast<char*>(yEdges.data()), yEdges.size() * sizeof(double));
+  in.read(reinterpret_cast<char*>(mycdf.data()), mycdf.size() * sizeof(double));
+
+  if (mycdf.empty())
+    {
+      std::cerr << "MYCDF is empty\n";
+      return {0,0};
+    }
+  
+  double u = rand3.Uniform(mycdf.back());
+  
+  int k = std::lower_bound(mycdf.begin(), mycdf.end(), u) - mycdf.begin();
+  
+  int ix = k % nx;
+  int iy = k / nx;
+  
+  double theta  = rand3.Uniform(xEdges[ix], xEdges[ix+1]);
+  double energy = rand3.Uniform(yEdges[iy], yEdges[iy+1]);
+
+  mh2.at("hThetaVsEnergy")->Fill(theta,energy);
+  return {theta, energy};
+}
+
+static Double_t SignalShape(double signalpeak,double bes,double lorewidth,double massn, double sqrts){ // return number of signal events produced(not the accepted) / POT at sqrts(s) at gven = 1
+  const double Wb = -7E-6;// MeV
+  
+  double eRes = (massn*massn - 2*me*me)/(2.*(me+Wb));
+  double eBeam = (sqrts*sqrts - 2*me*me)/(2.*me); // s = 2me^2 + 2meEbeam -> eBeam = (s-2me^2) / 2me
+  return signalpeak*TMath::Voigt(eBeam-eRes,bes*eRes,lorewidth*2,5); // last input was 4 but with low BES can have rounding problems
 }
 
 //minimum radius of cluster for ECal acceptance given sqrts
@@ -105,10 +178,19 @@ double ECalResolution(double energy)
   return sigmeE;
 }
 
+TVector3 VertexPosition(std::map<TString, TH2F*>& mh2, TString tag)
+{
+  double x = rand3.Gaus(0,Geometry.beamspotsize_X);
+  double y = rand3.Gaus(0,Geometry.beamspotsize_Y);
+
+  mh2.at("h" + tag + "VertexPosition")->Fill(x,y);
+  
+  return TVector3(x,y,Geometry.target_z);
+}
+
 //simulate tracker without B field, use energy from ECal
 double RecoSqrtsStraightTracks(TLorentzVector pos_4mom, TLorentzVector ele_4mom, bool ECalSmearingOn)
-{
-  
+{  
   //find transverse directions
   Double_t transverse_dir_pos_x = pos_4mom.X()/pos_4mom.Z();
   Double_t transverse_dir_pos_y = pos_4mom.Y()/pos_4mom.Z();
@@ -214,7 +296,7 @@ double getBYfield(double x0, double y0, double z0in){ // input in mm
   return -fConstantMagneticField*BField0;
 }
 
-std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag)
+std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag, const bool isOutsideDivergence = 0, const bool isOutsideBrem = 0)
 {
   TVector3 PT(0,0,0);
   TVector3 LocalPositionRot(0,0,0);
@@ -237,7 +319,7 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
 
   std::vector<TVector3> vCoords; //vector to contain coordinates of partiles at tracker planes
   int charge = 0;
-  if(tag == "Pos"||tag.Contains("Beam")) charge = +1;
+  if(tag == "Pos"||tag.Contains("Beam")||tag == "Brem") charge = +1;
   else if (tag == "Ele") charge = -1;
   else
     {
@@ -279,10 +361,16 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
     double x = LocalPosition.X();
     double y = LocalPosition.Y();
 
+    //make plots at Z1
     if ( (prevZ < z1) && (LocalPosition.Z() >= z1) ) {
-      mh2.at("h" + tag + "_XYZ1")->Fill(x,y);
-      mh1.at("h" + tag + "_XZ1")->Fill(x);
-      mh1.at("h" + tag + "_YZ1")->Fill(y);
+      FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "");
+
+      if(isOutsideDivergence) //for events where at least one particle has theta > beamdivergence
+	FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "BeamDivCut");
+	
+      if(isOutsideBrem) //for events where positron has theta > ThetaBremPos
+	  FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "BremPosCut");
+      
       if(vCoords.size()!=0)
 	{
 	  std::cout<<"[Swimmer]: vCoords has non-zero size at Z1"<<std::endl;
@@ -291,10 +379,16 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
       else vCoords.push_back(LocalPosition);
     }
 
+    //make plots at Z2
     if ( (prevZ < z2) && (LocalPosition.Z() >= z2) ) {
-      mh2.at("h" + tag + "_XYZ2")->Fill(x,y);
-      mh1.at("h" + tag + "_XZ2")->Fill(x);
-      mh1.at("h" + tag + "_YZ2")->Fill(y);
+      FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "");
+
+      if(isOutsideDivergence) //for events where at least one particle has theta > beamdivergence
+	FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "BeamDivCut");
+	
+      if(isOutsideBrem) //for events where positron has theta > ThetaBremPos
+	  FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "BremPosCut");
+
       if(vCoords.size()!=1)
 	{
 	  std::cout<<"[Swimmer]: vCoords has size != 1 at Z2"<<std::endl;
@@ -365,7 +459,7 @@ void BeamSpotSpread(TString tag, std::map<TString, TH1F*>& mh1, std::map<TString
       else if(tag.Contains("High"))
 	mh1.at("hPbeamSmear_HighSideband")->Fill(PbeamSmear);
       
-      Swimmer(TVector3(0,0,PbeamSmear), TVector3(0,0,Geometry.target_z), mh1, mh2, tag);
+      Swimmer(TVector3(0,0,PbeamSmear), VertexPosition(mh2, "Beam"), mh1, mh2, tag);
     }
 }
 
@@ -436,42 +530,80 @@ double TrackerResolution(double momentum) //momentum in MeV
   return momentum_resolution;
 }
 
-void TrackerToyMC()
+TVector3 MomentumBuilder(double momentum, double cos_theta, double phi)
 {
-  TBenchmark Benchmark = TBenchmark();
-  Benchmark.Start("macro");
+  //trigonometry
+  Double_t theta = TMath::ACos(cos_theta);
+  Double_t sin_theta = TMath::Sin(theta);
+  Double_t sin_phi   = TMath::Sin(phi);
+  Double_t cos_phi   = TMath::Cos(phi);
+  
+  //momentum components in CoM
+  Double_t pz = momentum*cos_theta;
+  Double_t px = momentum*sin_theta*cos_phi;
+  Double_t py = momentum*sin_theta*sin_phi;
 
-  //set up histos
-  std::map<TString, TH1F*> mh1;
-  std::map<TString, TH2F*> mh2;
-  // 1D histograms
+  return TVector3(px, py, pz);
+}
+
+void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
+{
   mh1["hCosThetaPosCoMPassing"] = new TH1F("hCosThetaPosCoMPassing",";hCosThetaPosCoMPassing;",100,-1,1);
-
-  mh1["hBeam_LowSideband_XZ1"]  = new TH1F("hBeam_LowSideband_XZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
-  mh1["hBeam_LowSideband_XZ2"]  = new TH1F("hBeam_LowSideband_XZ2","X position of uninteracted beam at low sideband energy at z2",100,125,135);
-  mh1["hBeam_HighSideband_XZ1"] = new TH1F("hBeam_HighSideband_XZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
-  mh1["hBeam_HighSideband_XZ2"] = new TH1F("hBeam_HighSideband_XZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
-
-  mh1["hBeam_LowSideband_YZ1"]  = new TH1F("hBeam_LowSideband_YZ1","Y position of uninteracted beam at low sideband energy at z1",100,-1,1);
-  mh1["hBeam_LowSideband_YZ2"]  = new TH1F("hBeam_LowSideband_YZ2","Y position of uninteracted beam at low sideband energy at z2",100,-1,1);
-  mh1["hBeam_HighSideband_YZ1"] = new TH1F("hBeam_HighSideband_YZ1","Y position of uninteracted beam at high sideband energy at z1",100,-1,1);
-  mh1["hBeam_HighSideband_YZ2"] = new TH1F("hBeam_HighSideband_YZ2","Y position of uninteracted beam at high sideband energy at z2",100,-1,1);
 
   mh1["hPos_mom"] = new TH1F("hPos_mom","momentum of positron from decay", 300, 0, 300);
   mh1["hEle_mom"] = new TH1F("hEle_mom","momentum of electron from decay", 300, 0, 300);
   
   double xlim = Geometry.magnet_width_x/2.;
   double ylim = Geometry.magnet_width_y/2.;
-  
-  mh1["hPos_XZ1"] = new TH1F("hPos_XZ1","X position of positron from decay at z1", 200, -1.*xlim, xlim);
-  mh1["hPos_XZ2"] = new TH1F("hPos_XZ2","X position of positron from decay at z2", 200, -1.*xlim, xlim);
-  mh1["hEle_XZ1"] = new TH1F("hEle_XZ1","X position of electron from decay at z1", 200, -1.*xlim, xlim);
-  mh1["hEle_XZ2"] = new TH1F("hEle_XZ2","X position of electron from decay at z2", 200, -1.*xlim, xlim);
-  
-  mh1["hPos_YZ1"] = new TH1F("hPos_YZ1","Y position of positron from decay at z1", 200, -1.*ylim, ylim);
-  mh1["hPos_YZ2"] = new TH1F("hPos_YZ2","Y position of positron from decay at z2", 200, -1.*ylim, ylim);
-  mh1["hEle_YZ1"] = new TH1F("hEle_YZ1","Y position of electron from decay at z1", 200, -1.*ylim, ylim);
-  mh1["hEle_YZ2"] = new TH1F("hEle_YZ2","Y position of electron from decay at z2", 200, -1.*ylim, ylim);
+
+  for(const TString& tag : aTags)
+    {
+      TString sTagTitle;
+      if(tag == "Beam") sTagTitle = "beam";
+      else if(tag == "Brem") sTagTitle = "bremsstrahlung";
+      else if(tag == "Ele"||tag == "Pos") sTagTitle = "decay";
+      else sTagTitle = "unkown tag";
+      
+      for(const auto& [sZKey, zPos] : vpZPositions)
+	{
+	  TString particle = "electron";
+	  if(tag == "Pos") particle = "positron";
+
+	  //initalise 2D position histograms
+	  //basic 2D histograms before any acceptance cuts
+	  TString base2dhistoname = Form("h%s_XY%s", tag.Data(), sZKey.Data());	      
+	  TString base2dhistotitle = Form("position of %s from %s at %s", particle.Data(), sTagTitle.Data(), sZKey.Data());
+	  mh2[base2dhistoname] = new TH2F(base2dhistoname, base2dhistotitle, 200, -xlim, xlim, 200, -ylim, ylim);
+
+	  //	  if(tag!="Ele" && tag!="Pos") continue; //cuts are only interesting for decays
+	  
+	  //2D histograms including acceptance cuts
+	  for(const auto& [sCutName, sCutTitle] : vpsCuts)
+	    {
+	      TString cut2dhistoname = Form("h%s_XY%s_%s", tag.Data(), sZKey.Data(), sCutName.Data());
+	      TString cut2dhistotitle = Form("position of %s from %s at %s %s", particle.Data(), sTagTitle.Data(), sZKey.Data(), sCutTitle.Data());
+	      mh2[cut2dhistoname] = new TH2F(cut2dhistoname, cut2dhistotitle, 200, -xlim, xlim, 200, -ylim, ylim);
+	    }
+	  
+	  //initalise 1D position histograms
+	  for(const TString& sXY : aXY)
+	    {
+	      //basic 1D histograms before any acceptance cuts
+	      TString base1dhistoname = Form("h%s_%s%s", tag.Data(), sXY.Data(), sZKey.Data());	      
+	      TString base1dhistotitle = Form("%s position of %s from decay at %s", sXY.Data(), particle.Data(), sZKey.Data());
+	      mh1[base1dhistoname] = new TH1F(base1dhistoname, base1dhistotitle, 200, -xlim, xlim);
+	      
+	      //1D histograms including acceptance cuts
+	      for(const auto& [sCutName, sCutTitle] : vpsCuts)
+		{
+		  TString cut1dhistoname = Form("h%s_%s%s_%s", tag.Data(), sXY.Data(), sZKey.Data(), sCutName.Data());
+		  TString cut1dhistotitle = Form("%s position of %s from decay at %s %s", sXY.Data(), particle.Data(), sZKey.Data(), sCutTitle.Data());
+		  
+		  mh1[cut1dhistoname] = new TH1F(cut1dhistoname, cut1dhistotitle, 200, -xlim, xlim);
+		}
+	    }
+       	}
+    }
 
   mh1["hRelativeMomResTrack"] = new TH1F("hRelativeMomResTrack","",100,0,0.1);
 
@@ -485,18 +617,49 @@ void TrackerToyMC()
   mh2["hBeam_LowSideband_XYZ2"]  = new TH2F("hBeam_LowSideband_XYZ2","Position of uninteracted beam at low sideband energy at z2",100,128,132,10,-1,1);
   mh2["hBeam_HighSideband_XYZ1"] = new TH2F("hBeam_HighSideband_XYZ1","Position of uninteracted beam at high sideband energy at z1",50,-1,1,50,-1,1);
   mh2["hBeam_HighSideband_XYZ2"] = new TH2F("hBeam_HighSideband_XYZ2","Position of uninteracted beam at high sideband energy at z2",100,86,90,100,-1,1);
-  
-  mh2["hPos_XYZ1"] = new TH2F("hPos_XYZ1","Position of positron from decay at z1", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
-  mh2["hPos_XYZ2"] = new TH2F("hPos_XYZ2","Position of positron from decay at z2", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
-  mh2["hEle_XYZ1"] = new TH2F("hEle_XYZ1","Position of electron from decay at z1", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
-  mh2["hEle_XYZ2"] = new TH2F("hEle_XYZ2","Position of electron from decay at z2", 200, -1.*xlim, xlim, 200, -1.*ylim, ylim);
+
+  mh2["hDecayVertexPosition"] = new TH2F("hDecayVertexPosition","Position of decay vertex on target",200,-20,20,200,-20,20);
+  mh2["hBremVertexPosition"] = new TH2F("hBremVertexPosition","Position of bremsstrahlung vertex on target",200,-20,20,200,-20,20);
+
+  mh1["hBeam_LowSideband_XZ1"]  = new TH1F("hBeam_LowSideband_XZ1","X position of uninteracted beam at low sideband energy at z1",100,-1,1);
+  mh1["hBeam_LowSideband_XZ2"]  = new TH1F("hBeam_LowSideband_XZ2","X position of uninteracted beam at low sideband energy at z2",100,125,135);
+  mh1["hBeam_HighSideband_XZ1"] = new TH1F("hBeam_HighSideband_XZ1","X position of uninteracted beam at high sideband energy at z1",100,-1,1);
+  mh1["hBeam_HighSideband_XZ2"] = new TH1F("hBeam_HighSideband_XZ2","X position of uninteracted beam at high sideband energy at z2",100,86,90);
+
+  mh1["hBeam_LowSideband_YZ1"]  = new TH1F("hBeam_LowSideband_YZ1","Y position of uninteracted beam at low sideband energy at z1",100,-1,1);
+  mh1["hBeam_LowSideband_YZ2"]  = new TH1F("hBeam_LowSideband_YZ2","Y position of uninteracted beam at low sideband energy at z2",100,-1,1);
+  mh1["hBeam_HighSideband_YZ1"] = new TH1F("hBeam_HighSideband_YZ1","Y position of uninteracted beam at high sideband energy at z1",100,-1,1);
+  mh1["hBeam_HighSideband_YZ2"] = new TH1F("hBeam_HighSideband_YZ2","Y position of uninteracted beam at high sideband energy at z2",100,-1,1);
+
+  mh2["hThetaVsEnergy"] = new TH2F("hThetaVsEnergy","hThetaVsEnergy",200,0,0.2,250,0,500);
+}
+
+void TrackerToyMC()
+{
+  TBenchmark Benchmark = TBenchmark();
+  Benchmark.Start("macro");
+
+  //set up histos
+  std::map<TString, TH1F*> mh1;
+  std::map<TString, TH2F*> mh2;
+  InitialiseHistos(mh1, mh2);
+
+  TString sBremBinFile = "/Users/elizabeth/Documents/PADME/PADME-Tracker-Toy/BremSampler.bin";
   
   int nDecays = 1e5;
+
+  int nOutsideDivergence = 0; //no. decays where both decay products have theta > beam divergence
+  int nOutsideBrem       = 0; //no. decays where decay positron has theta > ThetaBremPos
+
+  Double_t PbeamNom = 279; //nominal beam mom, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
   
   for(int ii = 0; ii<nDecays; ii++)
-    {
+    {      
+      bool isOutsideDivergence = 0; //both decay products have theta > beam divergence
+      bool isOutsideBrem = 0;       //decay positron has theta > ThetaBremPos
+
+      double Pbeam = PbeamNom;
       if(ii%1000 == 0) std::cout<<"particle "<<ii<<std::endl;
-      Double_t Pbeam = 279; //nominal beam mom, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
       if(BeamEnergySpread) Pbeam = Pbeam+rand3.Gaus(0,SigmaPOverP*Pbeam);
       
       //set beam conditions
@@ -524,18 +687,7 @@ void TrackerToyMC()
       Double_t cos_theta_pos_CoM = rand3.Uniform(-1,1);   //polar angle in CoM is uniformly distributed in cos(theta)
       Double_t phi_pos = rand3.Uniform(0,2.*TMath::Pi()); //azimuthal angle in CoM is uniformly distributed between 0-2pi
 
-      //trigonometry
-      Double_t theta_pos_CoM = TMath::ACos(cos_theta_pos_CoM);
-      Double_t sin_theta_pos_CoM = TMath::Sin(theta_pos_CoM);
-      Double_t sin_phi_pos_CoM   = TMath::Sin(phi_pos);
-      Double_t cos_phi_pos_CoM   = TMath::Cos(phi_pos);
-
-      //momentum components in CoM
-      Double_t pz_pos_CoM = mom_CoM*cos_theta_pos_CoM;
-      Double_t px_pos_CoM = mom_CoM*sin_theta_pos_CoM*cos_phi_pos_CoM;
-      Double_t py_pos_CoM = mom_CoM*sin_theta_pos_CoM*sin_phi_pos_CoM;
-
-      TVector3 pos_3mom_CoM = TVector3(px_pos_CoM, py_pos_CoM, pz_pos_CoM); //3-momentum of positron in CoM
+      TVector3 pos_3mom_CoM = MomentumBuilder(mom_CoM, cos_theta_pos_CoM, phi_pos);
       TVector3 ele_3mom_CoM = -1.*pos_3mom_CoM; //3-momentum of positron in CoM
       
       TLorentzVector pos_4mom_CoM = TLorentzVector(pos_3mom_CoM,Ee_CoM);  //4-momentum of positron in CoM
@@ -545,6 +697,20 @@ void TrackerToyMC()
       pos_4mom_lab.Boost(boost);
       TLorentzVector ele_4mom_lab = ele_4mom_CoM;
       ele_4mom_lab.Boost(boost);
+
+      //      std::cout<<"theta pos "<<pos_4mom_lab.Theta()*1e3<<" ele "<<ele_4mom_lab.Theta()<<std::endl;
+      
+      if(pos_4mom_lab.Theta()*1e3 > Geometry.beamdivergence && ele_4mom_lab.Theta()*1e3 > Geometry.beamdivergence)
+	{
+	  isOutsideDivergence = 1;
+	  nOutsideDivergence++;
+	}
+      
+      if(pos_4mom_lab.Theta()*1e3 > ThetaBremPos)
+	{
+	  isOutsideBrem = 1;
+	  nOutsideBrem++;
+	}
 
       //total energy and mom of e+/e- in lab
       Double_t ptot_pos_lab = pos_4mom_lab.P();
@@ -566,7 +732,7 @@ void TrackerToyMC()
       Double_t pt_ele_lab = ele_4mom_lab.Pt();
       Double_t tan_theta_pos_lab = pt_pos_lab/pos_4mom_lab.Z();
       Double_t tan_theta_ele_lab = pt_ele_lab/ele_4mom_lab.Z();
-
+      
       //      std::cout<<tan_theta_pos_lab<<" "<<tan_theta_ele_lab<<" "<<tanmin<<" "<<tanmax<<std::endl;
 
       double reco_sqrts_straight_nores = -999;
@@ -585,7 +751,7 @@ void TrackerToyMC()
       double reco_sqrts_straight_truth     = RecoSqrtsStraightTracks(pos_4mom_lab, ele_4mom_lab, 0);
       mh1["hSqrtsTrue"]->Fill(reco_sqrts_straight_truth,signalweight);
       
-      TVector3 vertex_position = TVector3(0,0,Geometry.target_z);
+      TVector3 vertex_position = VertexPosition(mh2, "Decay");
       TVector3 pos_3mom_lab_true = TVector3(pos_4mom_lab.X(), pos_4mom_lab.Y(), pos_4mom_lab.Z());
       TVector3 ele_3mom_lab_true = TVector3(ele_4mom_lab.X(), ele_4mom_lab.Y(), ele_4mom_lab.Z());
 
@@ -611,20 +777,38 @@ void TrackerToyMC()
       mh1["hSqrtsTrackerRes"]->Fill(reco_sqrts_track_smear);
       
       //swimmer
-      std::vector<TVector3> vPosCoord = Swimmer(pos_3mom_lab_true, vertex_position, mh1, mh2, "Pos");
-      std::vector<TVector3> vEleCoord = Swimmer(ele_3mom_lab_true, vertex_position, mh1, mh2, "Ele");
+      std::vector<TVector3> vPosCoord = Swimmer(pos_3mom_lab_true, vertex_position, mh1, mh2, "Pos", isOutsideDivergence, isOutsideBrem);
+      std::vector<TVector3> vEleCoord = Swimmer(ele_3mom_lab_true, vertex_position, mh1, mh2, "Ele", isOutsideDivergence, isOutsideBrem);
 
-      if(vPosCoord.size()!= 2 || vEleCoord.size()!= 2)
+      if(vPosCoord.size()!= vpZPositions.size() || vEleCoord.size()!= vpZPositions.size())
 	{
-	  //	  std::cout<<"ii "<<ii<<" vPosCoord has size "<<vPosCoord.size()<<" "<<" vEleCoord has size "<<vEleCoord.size()<<" "<<std::endl;
+	  std::cout<<"ii "<<ii<<" vPosCoord has size "<<vPosCoord.size()<<" "<<" vEleCoord has size "<<vEleCoord.size()<<" "<<std::endl;
 	  continue;
 	}
 
       double reco_sqrts_curved = -999;
       //      RecoSqrtsCurvedTracks(vPosCoord, vEleCoord);
+    }//end loop over decays
 
+  double nBrem = 1e4;
+  for(int jj = 0; jj<nBrem; jj++)
+    {
+      if(jj%1000 == 0) std::cout<<"Bremsstrahlung "<<jj<<std::endl;
+      std::pair<double, double> pThetaEne = BremThetaEneSampler(sBremBinFile, mh2);
+      Double_t phi_brem = rand3.Uniform(0,2.*TMath::Pi()); //azimuthal angle in CoM is uniformly distributed between 0-2pi
+
+      double theta  = pThetaEne.first;
+      double energy = pThetaEne.second;
+      
+      double momentum = energy*energy-me*me;
+      TVector3 bremMom = MomentumBuilder(momentum, TMath::Cos(theta), phi_brem);
+
+      TVector3 vertex_position = VertexPosition(mh2, "Brem");
+      
+      std::vector<TVector3> vBremCoord = Swimmer(bremMom, vertex_position, mh1, mh2, "Brem");
     }
   
+
   // BeamSpotSpread("Beam_LowSideband", mh1, mh2);
   // BeamSpotSpread("Beam_HighSideband", mh1, mh2);
   
@@ -689,4 +873,8 @@ void TrackerToyMC()
   
   gPad->Modified();
   gPad->Update();
+
+
+  std::cout<<"beam energy "<<PbeamNom<<" divergence accetpance "<<1.*nOutsideDivergence/nDecays<<" Brem acceptance "<<1.*nOutsideBrem/nDecays<<std::endl;
+  
 }
