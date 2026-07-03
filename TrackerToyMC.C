@@ -20,8 +20,8 @@ struct PADMEGeometry
 };
 
 bool doBrem  = 1;
-bool doDecay = 0;
-bool doBeamLow  = 0;
+bool doDecay = 1;
+bool doBeamLow  = 1;
 bool doBeamHigh  = 1;
 
 PADMEGeometry Geometry;
@@ -434,7 +434,7 @@ void BeamSpotSpread(TString tag, std::map<TString, TH1F*>& mh1, std::map<TString
 {
   double sqrts_sideband = 0;
   if(tag == "Beam_LowSideband") sqrts_sideband = 16.5;
-  else if(tag == "Beam_HighSideband") sqrts_sideband = 21.0;//20.0;
+  else if(tag == "Beam_HighSideband") sqrts_sideband = 20.0; //beam energy 430 MeV => 21.0
   else
     {
       std::cout<<"BeamSpotSpread: tag "<<tag<<" unknown"<<std::endl;
@@ -813,8 +813,8 @@ void TrackerToyMC()
 
 	  double theta  = pThetaEne.first;
 	  double energy = pThetaEne.second;
-      
-	  double momentum = energy*energy-me*me;
+
+	  double momentum = TMath::Sqrt(energy*energy-me*me);
 	  TVector3 bremMom = MomentumBuilder(momentum, TMath::Cos(theta), phi_brem);
 
 	  TVector3 vertex_position = VertexPosition(mh2, "Brem");
