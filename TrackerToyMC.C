@@ -32,6 +32,9 @@ const Double_t position_res = 100e-6; //assume 100 microns for straws
 const Int_t    nTrackerPlanes = 4;//3;
 const Double_t ThetaBremPos = 14; //mrad, >98% of bremsstrahlung positrons have theta less than this at 430 MeV beam energy
 
+double xacc = Geometry.magnet_width_x/2.; //half of acceptance of vacuum chamber
+double yacc = Geometry.magnet_width_y/2.; //half of acceptance of vacuum chamber
+
 const Double_t z1 = Geometry.magnet_front_z; //first scintillator position at entrance to magnet
 const Double_t z2 = Geometry.chamber_back_z; //second scintillator position at back of chamber
 std::vector<std::pair<TString, Double_t>> vpZPositions = {{"Z1",z1}, {"Z2",z2}};
@@ -39,9 +42,18 @@ std::vector<std::pair<TString, Double_t>> vpZPositions = {{"Z1",z1}, {"Z2",z2}};
 std::vector<TString>     vTags;
 std::array<TString, 2>   aXY   = {"X","Y"};
 
+const Double_t CrossZ1 = 2; //mm, half of x and y dimension of symmetric cross-shaped hole at Z1 for beam/bremsstrahlung
+
+const Double_t CrossX1Z2 = 85;  //mm, low x limit of cross-shaped hole at Z2 for beam/bremsstrahlun
+const Double_t CrossX2Z2 = 135; //mm, high x limit of cross-shaped hole at Z2 for beam/bremsstrahlung
+const Double_t CrossYZ2 = 15;   //mm, half of y dimension of symmetric cross-shaped hole at Z2 for beam/bremsstrahlung
+
 std::map<TString, TString> msCuts;
-msCuts.insert({"Z1BoxCut", "with x and y hole between -1mm-1mm at Z1"});
-msCuts.insert({"Z2BoxCut", "with x hole between 0-150mm and y hole between -20-20mm at Z2"});
+// msCuts.insert({"Z1BoxCut", "with rectangular hole between -2mm-2mm in x and y at Z1"});
+// msCuts.insert({"Z2BoxCut", "with rectangular hole between 0-150mm in x and -15-15mm in y at Z2"});
+
+msCuts.insert({"Z1CrossCut", Form("with cross-shaped hole between -%.0fmm-%.0fmm in x and y at Z1", CrossZ1, CrossZ1)});
+msCuts.insert({"Z2CrossCut", Form("with cross-shaped hole between %.0f-%.0fmm in x and -%.0f-%.0fmm in y at Z2",CrossX1Z2, CrossX2Z2, CrossYZ2, CrossYZ2)});
 
 const bool BeamEnergySpread = 1;
 const bool ElectronEnergySpread = 1;
@@ -367,8 +379,11 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
     if ( (prevZ < z1) && (LocalPosition.Z() >= z1) ) {
       FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "");
 
-      if(!(x>=-1 && x<=1 && y>=-1 && y<=1) && msCuts.find("Z1BoxCut")!=msCuts.end()) //veto events where positron is between x,y = [-1,1] mm at Z1
-	FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "Z1BoxCut");
+      // if(!(x>=-2 && x<=2) && msCuts.find("Z1BoxCut")!=msCuts.end()) //veto events where positron is between x,y = [-2,2] mm at Z1
+      // 	FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "Z1BoxCut");
+      
+      if((!(x>=-CrossZ1 && x<=CrossZ1) && !(y>=-CrossZ1 && y<=CrossZ1)) && msCuts.find("Z1CrossCut")!=msCuts.end()) //veto events where positron is between x = [-2,2] mm or y = [-2,2] mm at Z1
+	FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "Z1CrossCut");
 
       if(vCoords.size()!=0)
 	{
@@ -382,8 +397,11 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
     if ( (prevZ < z2) && (LocalPosition.Z() >= z2) ) {
       FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "");
 
-      if(!(x>=0 && x<=150 && y>=-20 && y<=20) && msCuts.find("Z2BoxCut")!=msCuts.end()) //veto events where positron is between x = [0,150] mm and y = [-20,20] mm at Z2
-	FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "Z2BoxCut");
+      // if(!(x>=0 && x<=150 && y>=-15 && y<=15) && msCuts.find("Z2BoxCut")!=msCuts.end()) //veto events where positron is between x = [0,150] mm and y = [-15,15] mm at Z2
+      // 	FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "Z2BoxCut");
+
+      if((!(x>=CrossX1Z2 && x<=CrossX2Z2) && !(y>=-CrossYZ2 && y<=CrossYZ2)) && msCuts.find("Z2CrossCut")!=msCuts.end()) //veto events where positron is between x = [85,135] mm or y = [-15,15] mm at Z2
+	FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "Z2CrossCut");
       
       if(vCoords.size()!=1)
 	{
@@ -393,8 +411,9 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
       else vCoords.push_back(LocalPosition);
     }
     
-    if (LocalPosition.Z() > Geometry.ECal_front_z + Geometry.ECal_length) break;
-    
+    if (LocalPosition.Z() > Geometry.ECal_front_z + Geometry.ECal_length)
+	break;
+
     if (!insideECal) {
       if (LocalPosition.Z()-Geometry.ECal_front_z > 0 && LocalPosition.Z()-Geometry.ECal_front_z < Geometry.ECal_length) { // register position of entering in the ecal
 	      
@@ -642,9 +661,6 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
   mh1["hPos_mom"] = new TH1F("hPos_mom","momentum of positron from decay", 300, 0, 300);
   mh1["hEle_mom"] = new TH1F("hEle_mom","momentum of electron from decay", 300, 0, 300);
   
-  double xacc = Geometry.magnet_width_x/2.;
-  double yacc = Geometry.magnet_width_y/2.;
-
   for(const TString& tag : vTags)
     {
       TString sTagTitle;
@@ -706,7 +722,7 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
 	    {
 	      //basic 1D histograms before any acceptance cuts
 	      TString base1dhistoname = Form("h%s_%s%s", tag.Data(), sXY.Data(), sZKey.Data());	      
-	      TString base1dhistotitle = Form("%s position of %s from %s at %s", sXY.Data(), particle.Data(), tag.Data(), sZKey.Data());
+	      TString base1dhistotitle = Form("%s position of %s from %s at %s", sXY.Data(), particle.Data(), sTagTitle.Data(), sZKey.Data());
 
 	      double axislim = 100;
 	      if(sXY == "X") axislim = xlim;
@@ -721,7 +737,7 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
 		  if((sZKey=="Z1" && sCutName.Contains("Z2")) || (sZKey=="Z2" && sCutName.Contains("Z1")))
 		     continue;
 		  TString cut1dhistoname = Form("h%s_%s%s_%s", tag.Data(), sXY.Data(), sZKey.Data(), sCutName.Data());
-		  TString cut1dhistotitle = Form("%s position of %s from %s at %s %s", sXY.Data(), particle.Data(), tag.Data(), sZKey.Data(), sCutTitle.Data());
+		  TString cut1dhistotitle = Form("%s position of %s from %s at %s %s", sXY.Data(), particle.Data(), sTagTitle.Data(), sZKey.Data(), sCutTitle.Data());
 		  
 		  mh1[cut1dhistoname] = new TH1F(cut1dhistoname, cut1dhistotitle, 200, -axislim, axislim);
 		}
@@ -763,10 +779,10 @@ void TrackerToyMC()
   TString sBremBinFile = "/Users/elizabeth/Documents/PADME/PADME-Tracker-Toy/BremSampler.bin";
   
   int nDecays = 1e5;
-
-  int nOutsideDivergence = 0; //no. decays where both decay products have theta > beam divergence
-  int nOutsideBrem       = 0; //no. decays where decay positron has theta > ThetaBremPos
-
+  int nPosCrossAcc = 0;  //number of events with positron in vacuum chamber and not in cross hole at Z2
+  int nEleCrossAcc = 0;  //number of events with electron in vacuum chamber and not in cross hole at Z2
+  int nBothCrossAcc = 0; //number of events with both positron and electron in vacuum chamber and not in cross hole at Z2
+  
   Double_t PbeamNom = 279; //nominal beam momentum, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
 
   if(doDecay)
@@ -882,6 +898,31 @@ void TrackerToyMC()
 	  //swimmer
 	  std::vector<TVector3> vPosCoord = Swimmer(pos_3mom_lab_true, vertex_position, mh1, mh2, "Pos");
 	  std::vector<TVector3> vEleCoord = Swimmer(ele_3mom_lab_true, vertex_position, mh1, mh2, "Ele");
+
+	  bool isPosCrossAcc = false; //does positron enter acceptance at Z2
+	  if(!(vPosCoord[1].X()>=CrossX1Z2 && vPosCoord[1].X()<=CrossX2Z2)
+	     && !(vPosCoord[1].Y()>=-CrossYZ2 && vPosCoord[1].Y()<=CrossYZ2)
+	     && (vPosCoord[1].X()>=-xacc && vPosCoord[1].X()<=xacc)
+	     && (vPosCoord[1].Y()>=-yacc && vPosCoord[1].Y()<=yacc)
+	     )
+	    {
+	      isPosCrossAcc = true;
+	      nPosCrossAcc++;
+	    }
+
+	  bool isEleCrossAcc = false; //does positron enter acceptance at Z2
+	  if(!(vEleCoord[1].X()>=CrossX1Z2 && vEleCoord[1].X()<=CrossX2Z2)
+	     && !(vEleCoord[1].Y()>=-CrossYZ2 && vEleCoord[1].Y()<=CrossYZ2)
+	     && (vEleCoord[1].X()>=-xacc && vEleCoord[1].X()<=xacc)
+	     && (vEleCoord[1].Y()>=-yacc && vEleCoord[1].Y()<=yacc)
+	     )
+	    {
+	      isEleCrossAcc = true;
+	      nEleCrossAcc++;
+	    }
+
+	  if(isPosCrossAcc&&isEleCrossAcc) nBothCrossAcc++;
+	  
 	  /*
 	    if(vPosCoord.size()!= vpZPositions.size() || vEleCoord.size()!= vpZPositions.size())
 	    {
@@ -893,7 +934,7 @@ void TrackerToyMC()
 	  //      RecoSqrtsCurvedTracks(vPosCoord, vEleCoord);
 	}//end loop over decays
     }
-  
+
   double nBrem = 1e4;
   if(doBrem)
     {
@@ -989,6 +1030,5 @@ void TrackerToyMC()
   gPad->Modified();
   gPad->Update();
 
-  //  std::cout<<"beam energy "<<PbeamNom<<" divergence acceptance "<<1.*nOutsideDivergence/nDecays<<" Brem acceptance "<<1.*nOutsideBrem/nDecays<<std::endl;
-  
+  std::cout<<"events with positron in acceptance: "<<nPosCrossAcc<<" events with electron in acceptance: "<<nEleCrossAcc<<" events with both in acceptance: "<<nBothCrossAcc<<std::endl;
 }
