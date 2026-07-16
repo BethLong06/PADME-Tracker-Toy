@@ -40,8 +40,8 @@ std::vector<TString>     vTags;
 std::array<TString, 2>   aXY   = {"X","Y"};
 
 std::map<TString, TString> msCuts;
-// mCuts.push_back({"BeamDivCut", "with hole for beam divergence"});
-// mCuts.push_back({"BremPosCut", "with hole for bremsstrahlung positron"});
+msCuts.insert({"Z1BoxCut", "with x and y hole between -1mm-1mm at Z1"});
+msCuts.insert({"Z2BoxCut", "with x hole between 0-150mm and y hole between -20-20mm at Z2"});
 
 const bool BeamEnergySpread = 1;
 const bool ElectronEnergySpread = 1;
@@ -105,7 +105,6 @@ std::pair<double, double> BremThetaEneSampler(TString sBremBinFile, std::map<TSt
   double theta  = rand3.Uniform(xEdges[ix], xEdges[ix+1]);
   double energy = rand3.Uniform(yEdges[iy], yEdges[iy+1]);
 
-  mh2.at("hThetaVsEnergy")->Fill(theta,energy);
   return {theta, energy};
 }
 
@@ -300,7 +299,7 @@ double getBYfield(double x0, double y0, double z0in){ // input in mm
   return -fConstantMagneticField*BField0;
 }
 
-std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag, const bool isOutsideDivergence = 0, const bool isOutsideBrem = 0)
+std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, const TString tag)
 {
   TVector3 PT(0,0,0);
   TVector3 LocalPositionRot(0,0,0);
@@ -368,11 +367,8 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
     if ( (prevZ < z1) && (LocalPosition.Z() >= z1) ) {
       FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "");
 
-      if(isOutsideDivergence && msCuts.find("BeamDivCut")!=msCuts.end()) //for events where at least one particle has theta > beamdivergence, if you're applying the beam divergence cut
-	FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "BeamDivCut");
-
-      if(isOutsideBrem && msCuts.find("BremPosCut")!=msCuts.end()) //for events where positron has theta > ThetaBremPos, if you're applying the bremsstrahlung angle cut
-	  FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "BremPosCut");
+      if(!(x>=-1 && x<=1 && y>=-1 && y<=1) && msCuts.find("Z1BoxCut")!=msCuts.end()) //veto events where positron is between x,y = [-1,1] mm at Z1
+	FillPositionHistos(mh1, mh2, tag, x, y, "Z1", "Z1BoxCut");
 
       if(vCoords.size()!=0)
 	{
@@ -386,12 +382,9 @@ std::vector<TVector3> Swimmer(TVector3 LocalMomentum, TVector3 LocalPosition, st
     if ( (prevZ < z2) && (LocalPosition.Z() >= z2) ) {
       FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "");
 
-      if(isOutsideDivergence && msCuts.find("BeamDivCut")!=msCuts.end()) //for events where at least one particle has theta > beamdivergence, if you're applying the beam divergence cut
-	FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "BeamDivCut");
-	
-      if(isOutsideBrem && msCuts.find("BremPosCut")!=msCuts.end()) //for events where positron has theta > ThetaBremPos, if you're applying the bremsstrahlung angle cut
-	  FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "BremPosCut");
-
+      if(!(x>=0 && x<=150 && y>=-20 && y<=20) && msCuts.find("Z2BoxCut")!=msCuts.end()) //veto events where positron is between x = [0,150] mm and y = [-20,20] mm at Z2
+	FillPositionHistos(mh1, mh2, tag, x, y, "Z2", "Z2BoxCut");
+      
       if(vCoords.size()!=1)
 	{
 	  std::cout<<"[Swimmer]: vCoords has size != 1 at Z2"<<std::endl;
@@ -464,25 +457,120 @@ void BeamSpotSpread(TString tag, std::map<TString, TH1F*>& mh1, std::map<TString
     }
 }
 
-void DrawAllHists(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
+TString FindVariableToSave(TDirectoryFile* dProcessDir, TString sHistoName)
 {
-  //  TFile* fOut = new TFile(sOutputFilePath, "recreate");
+  TDirectoryFile* dOutDir = nullptr;
+  if(sHistoName.Contains("XY")||sHistoName.Contains("Position"))
+    dOutDir = (TDirectoryFile*) dProcessDir->Get("XY");
+  else if(sHistoName.Contains("X"))
+    dOutDir = (TDirectoryFile*) dProcessDir->Get("X");
+  else if(sHistoName.Contains("Y"))
+    dOutDir = (TDirectoryFile*) dProcessDir->Get("Y");
+  else if(sHistoName.Contains("mom")||sHistoName.Contains("Pbeam"))
+    dOutDir = (TDirectoryFile*) dProcessDir->Get("Momentum");
 
+  if(!dOutDir||dOutDir==nullptr)
+    {
+      std::cout<<"[FindVariableToSave] unknown variable for histogram "<<sHistoName<<". Check directories made in DrawAllHists"<<std::endl;
+      return "";
+    }
+  else
+    return dOutDir->GetName();
+}
+
+//based on histogram name, return path within which to save histogram in output .root file
+TString FindHistoPathToSave(TFile* fOut, TString sHistoName)
+{
+  TString sProcess;
+  if(sHistoName.Contains("Brem"))
+    {
+      sProcess = "Brem";
+    }
+  else if(sHistoName.Contains("Decay")||sHistoName.Contains("hPos")||sHistoName.Contains("hEle"))
+    {
+      sProcess = "Decay";
+    }
+  else if(sHistoName.Contains("Beam_High")||(sHistoName.Contains("beam") && sHistoName.Contains("HighSideband")))
+    {
+      sProcess = "BeamHigh";
+    }
+  else if(sHistoName.Contains("Beam_Low")||(sHistoName.Contains("beam") && sHistoName.Contains("LowSideband")))
+    {
+      sProcess = "BeamLow";
+    }
+  else if(sHistoName.Contains("hRelativeMomResTrack")||sHistoName.Contains("hSqrtsTrackerRes") || sHistoName.Contains("hSqrtsTrue") || sHistoName.Contains("hThetaVsEnergy"))
+    {
+      sProcess = "/";
+    }
+  else
+    {
+      std::cout<<"[FindHistoPathToSave] trying to save histogram "<<sHistoName<<" for undefined process (Decay, Brem, BeamHigh/Low...). Check directories made in DrawAllHists"<<std::endl;
+      return "";
+    }
+  
+  TDirectoryFile* dProcDir = (TDirectoryFile*) fOut->Get(sProcess.Data());
+  if(dProcDir)
+    {
+      TString sVarName = FindVariableToSave(dProcDir, sHistoName);
+      if(sVarName.Length()!=0)
+	{
+	  return sProcess+"/"+sVarName;
+	}
+      else return "";
+    }
+  else return "/"; //default to top-level directory
+}
+
+void DrawAllHists(TString sOutputFilePath, std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2, bool doBrem, bool doDecay, bool doBeamHigh, bool doBeamLow)
+{
+  if(doBrem)     sOutputFilePath+="_Brem";
+  if(doDecay)    sOutputFilePath+="_Decay";
+  if(doBeamHigh) sOutputFilePath+="_BeamHigh";
+  if(doBeamLow)  sOutputFilePath+="_BeamLow";
+  sOutputFilePath+=".root";
+  
+  TFile* fOut = new TFile(sOutputFilePath, "recreate");
+  if(doBrem)     fOut->mkdir("Brem");
+  if(doDecay)    fOut->mkdir("Decay");
+  if(doBeamHigh) fOut->mkdir("BeamHigh");
+  if(doBeamLow)  fOut->mkdir("BeamLow");
+
+  TList* lDirList = fOut->GetListOfKeys();
+  TIter next(lDirList);
+  TKey* key;
+  
+  while ((key = (TKey*)next())) {
+    TString sDirName = key->GetName(); // histogram or subdirectory
+    TDirectoryFile* dDir = (TDirectoryFile*)fOut->Get(sDirName);
+    dDir->mkdir("X");
+    dDir->mkdir("Y");
+    dDir->mkdir("XY");
+    if(sDirName == "Decay"||sDirName.Contains("Beam"))
+      dDir->mkdir("Momentum");
+  }
+  
   // 1D histograms
   for (auto& [name, hist] : mh1) {
     TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
+    TString sDirectoryForHisto = FindHistoPathToSave(fOut, name);
+    if(sDirectoryForHisto.Length()!=0)
+      fOut->cd(sDirectoryForHisto);
     hist->Draw();
-    //    hist->Write();
+    hist->Write();
   }
-  
+
   // 2D histograms
   for (auto& [name, hist] : mh2) {
     TCanvas* c = new TCanvas("c_" + name, name, 900, 700);
+    TString sDirectoryForHisto = FindHistoPathToSave(fOut, name);
+    if(sDirectoryForHisto.Length()!=0)
+      fOut->cd(sDirectoryForHisto);
     hist->Draw("colz");
-    //    hist->Write();
+    hist->Write();
   }
-  // fOut->Write();
-  // fOut->Close();
+
+  fOut->Write();
+  fOut->Close();
 }
 
 //reconstructed momentum from tracks bent in B field
@@ -549,13 +637,13 @@ TVector3 MomentumBuilder(double momentum, double cos_theta, double phi)
 
 void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& mh2)
 {
-  mh1["hCosThetaPosCoMPassing"] = new TH1F("hCosThetaPosCoMPassing",";hCosThetaPosCoMPassing;",100,-1,1);
+  //  mh1["hCosThetaPosCoMPassing"] = new TH1F("hCosThetaPosCoMPassing",";hCosThetaPosCoMPassing;",100,-1,1);
 
   mh1["hPos_mom"] = new TH1F("hPos_mom","momentum of positron from decay", 300, 0, 300);
   mh1["hEle_mom"] = new TH1F("hEle_mom","momentum of electron from decay", 300, 0, 300);
   
-  double xlim = Geometry.magnet_width_x/2.;
-  double ylim = Geometry.magnet_width_y/2.;
+  double xacc = Geometry.magnet_width_x/2.;
+  double yacc = Geometry.magnet_width_y/2.;
 
   for(const TString& tag : vTags)
     {
@@ -581,6 +669,19 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
 	  TString particle = "positron";
 	  if(tag == "Ele") particle = "electron";
 
+	  double xlim, ylim = 100;
+	  //at Z1, all beam and brem particles are concentrated in < 5mm radius
+	  if(sZKey == "Z1" && sTagTitle!="decay")
+	    {
+	      xlim = 5;
+	      ylim = 5;
+	    }
+	  else
+	    {
+	      xlim = xacc;
+	      ylim = yacc;
+	    }
+	  
 	  //initalise 2D position histograms
 	  //basic 2D histograms before any acceptance cuts
 	  TString base2dhistoname = Form("h%s_XY%s", tag.Data(), sZKey.Data());	      
@@ -592,9 +693,12 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
 	  //2D histograms including acceptance cuts
 	  for(const auto& [sCutName, sCutTitle] : msCuts)
 	    {
+	      if((sZKey=="Z1" && sCutName.Contains("Z2")) || (sZKey=="Z2" && sCutName.Contains("Z1")))
+		 continue;
 	      TString cut2dhistoname = Form("h%s_XY%s_%s", tag.Data(), sZKey.Data(), sCutName.Data());
 	      TString cut2dhistotitle = Form("position of %s from %s at %s %s", particle.Data(), sTagTitle.Data(), sZKey.Data(), sCutTitle.Data());
 	      mh2[cut2dhistoname] = new TH2F(cut2dhistoname, cut2dhistotitle, 200, -xlim, xlim, 200, -ylim, ylim);
+	      
 	    }
 	  
 	  //initalise 1D position histograms
@@ -602,19 +706,22 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
 	    {
 	      //basic 1D histograms before any acceptance cuts
 	      TString base1dhistoname = Form("h%s_%s%s", tag.Data(), sXY.Data(), sZKey.Data());	      
-	      TString base1dhistotitle = Form("%s position of %s from decay at %s", sXY.Data(), particle.Data(), sZKey.Data());
-	      mh1[base1dhistoname] = new TH1F(base1dhistoname, base1dhistotitle, 200, -xlim, xlim);
+	      TString base1dhistotitle = Form("%s position of %s from %s at %s", sXY.Data(), particle.Data(), tag.Data(), sZKey.Data());
+
+	      double axislim = 100;
+	      if(sXY == "X") axislim = xlim;
+	      else if(sXY == "Y") axislim = ylim;
+	      else std::cout<<"[InitaliseHistograms] unknown axis "<<sXY<<" setting axis limits to 100"<<std::endl;
+	      
+	      mh1[base1dhistoname] = new TH1F(base1dhistoname, base1dhistotitle, 200, -axislim, axislim);
 	      
 	      //1D histograms including acceptance cuts
 	      for(const auto& [sCutName, sCutTitle] : msCuts)
 		{
+		  if((sZKey=="Z1" && sCutName.Contains("Z2")) || (sZKey=="Z2" && sCutName.Contains("Z1")))
+		     continue;
 		  TString cut1dhistoname = Form("h%s_%s%s_%s", tag.Data(), sXY.Data(), sZKey.Data(), sCutName.Data());
-		  TString cut1dhistotitle = Form("%s position of %s from decay at %s %s", sXY.Data(), particle.Data(), sZKey.Data(), sCutTitle.Data());
-
-		  double axislim = 100;
-		  if(sXY == "X") axislim = xlim;
-		  else if(sXY == "Y") axislim = ylim;
-		  else std::cout<<"[InitaliseHistograms] unknown axis "<<sXY<<" setting axis limits to 100"<<std::endl;
+		  TString cut1dhistotitle = Form("%s position of %s from %s at %s %s", sXY.Data(), particle.Data(), tag.Data(), sZKey.Data(), sCutTitle.Data());
 		  
 		  mh1[cut1dhistoname] = new TH1F(cut1dhistoname, cut1dhistotitle, 200, -axislim, axislim);
 		}
@@ -626,8 +733,8 @@ void InitialiseHistos(std::map<TString, TH1F*>& mh1, std::map<TString, TH2F*>& m
 
   mh1["hSqrtsTrue"]           = new TH1F("hSqrtsTrue","",100,16,18);
   mh1["hSqrtsTrackerRes"]     = new TH1F("hSqrtsTrackerRes",";reconstructed #sqrt{s}",200,16,18);
-  mh1["hDeltaSqrtsNoRes"]     = new TH1F("hDeltaSqrtsNoRes",";#Delta(#sqrt{s})_{True} (MeV)",100,-2,2);
-  mh1["hDeltaSqrtsECalSmear"] = new TH1F("hDeltaSqrtsECalSmear",";#Delta(#sqrt{s})_{ECalSmear} (MeV)",100,-2,2);
+  //  mh1["hDeltaSqrtsNoRes"]     = new TH1F("hDeltaSqrtsNoRes",";#Delta(#sqrt{s})_{True} (MeV)",100,-2,2);
+  //  mh1["hDeltaSqrtsECalSmear"] = new TH1F("hDeltaSqrtsECalSmear",";#Delta(#sqrt{s})_{ECalSmear} (MeV)",100,-2,2);
   mh2["hThetaVsEnergy"] = new TH2F("hThetaVsEnergy","hThetaVsEnergy",200,0,0.2,250,0,500);
 }
 
@@ -660,15 +767,12 @@ void TrackerToyMC()
   int nOutsideDivergence = 0; //no. decays where both decay products have theta > beam divergence
   int nOutsideBrem       = 0; //no. decays where decay positron has theta > ThetaBremPos
 
-  Double_t PbeamNom = 279; //nominal beam mom, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
+  Double_t PbeamNom = 279; //nominal beam momentum, before adding energy spread, in MeV (scan between 262 MeV and 296 MeV gives 279 MeV average)
 
   if(doDecay)
     {
       for(int ii = 0; ii<nDecays; ii++)
 	{      
-	  bool isOutsideDivergence = 0; //both decay products have theta > beam divergence
-	  bool isOutsideBrem = 0;       //decay positron has theta > ThetaBremPos
-
 	  double Pbeam = PbeamNom;
 	  if(ii%1000 == 0) std::cout<<"particle "<<ii<<std::endl;
 	  if(BeamEnergySpread) Pbeam = Pbeam+rand3.Gaus(0,SigmaPOverP*Pbeam);
@@ -711,18 +815,6 @@ void TrackerToyMC()
 
 	  //      std::cout<<"theta pos "<<pos_4mom_lab.Theta()*1e3<<" ele "<<ele_4mom_lab.Theta()<<std::endl;
       
-	  if(pos_4mom_lab.Theta()*1e3 > Geometry.beamdivergence && ele_4mom_lab.Theta()*1e3 > Geometry.beamdivergence)
-	    {
-	      isOutsideDivergence = 1;
-	      nOutsideDivergence++;
-	    }
-      
-	  if(pos_4mom_lab.Theta()*1e3 > ThetaBremPos)
-	    {
-	      isOutsideBrem = 1;
-	      nOutsideBrem++;
-	    }
-
 	  //total energy and mom of e+/e- in lab
 	  Double_t ptot_pos_lab = pos_4mom_lab.P();
 	  Double_t ptot_ele_lab = ele_4mom_lab.P();
@@ -788,8 +880,8 @@ void TrackerToyMC()
 	  mh1["hSqrtsTrackerRes"]->Fill(reco_sqrts_track_smear);
       
 	  //swimmer
-	  std::vector<TVector3> vPosCoord = Swimmer(pos_3mom_lab_true, vertex_position, mh1, mh2, "Pos", isOutsideDivergence, isOutsideBrem);
-	  std::vector<TVector3> vEleCoord = Swimmer(ele_3mom_lab_true, vertex_position, mh1, mh2, "Ele", isOutsideDivergence, isOutsideBrem);
+	  std::vector<TVector3> vPosCoord = Swimmer(pos_3mom_lab_true, vertex_position, mh1, mh2, "Pos");
+	  std::vector<TVector3> vEleCoord = Swimmer(ele_3mom_lab_true, vertex_position, mh1, mh2, "Ele");
 	  /*
 	    if(vPosCoord.size()!= vpZPositions.size() || vEleCoord.size()!= vpZPositions.size())
 	    {
@@ -805,15 +897,21 @@ void TrackerToyMC()
   double nBrem = 1e4;
   if(doBrem)
     {
-      for(int jj = 0; jj<nBrem; jj++)
+      int jj = 0;
+      while(jj<nBrem)
 	{
-	  if(jj%1000 == 0) std::cout<<"Bremsstrahlung "<<jj<<std::endl;
 	  std::pair<double, double> pThetaEne = BremThetaEneSampler(sBremBinFile, mh2);
-	  Double_t phi_brem = rand3.Uniform(0,2.*TMath::Pi()); //azimuthal angle in CoM is uniformly distributed between 0-2pi
-
+	
 	  double theta  = pThetaEne.first;
 	  double energy = pThetaEne.second;
+	  if(energy>PbeamNom) continue;
+	  if(jj%1000 == 0) std::cout<<"Bremsstrahlung "<<jj<<std::endl;
+	  jj++;
 
+	  mh2.at("hThetaVsEnergy")->Fill(theta,energy);
+	  
+	  Double_t phi_brem = rand3.Uniform(0,2.*TMath::Pi()); //azimuthal angle in CoM is uniformly distributed between 0-2pi
+	  
 	  double momentum = TMath::Sqrt(energy*energy-me*me);
 	  TVector3 bremMom = MomentumBuilder(momentum, TMath::Cos(theta), phi_brem);
 
@@ -828,7 +926,10 @@ void TrackerToyMC()
   
   Benchmark.Show("macro");
 
-  DrawAllHists(mh1, mh2);
+  //save plots to output .root file
+  TString sOutputFilePath = "ToyMC";
+  sOutputFilePath+="_"+std::to_string(int(PbeamNom));
+  DrawAllHists(sOutputFilePath, mh1, mh2, doBrem, doDecay, doBeamHigh, doBeamLow);
 
   int nelectronsim = 1e4;
   double sqrtsmin = 16;
